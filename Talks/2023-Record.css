@@ -29,3 +29,7 @@ h1 {
     padding: 0vw 5vw 0vw 5vw;
 }
 
+.picture-full {
+    width: 40vw;
+    object-fit: cover;
+}
