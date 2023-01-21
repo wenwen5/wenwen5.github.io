@@ -33,3 +33,8 @@ h1 {
     width: 40vw;
     object-fit: cover;
 }
+
+.picture-half {
+    width: 30vw;
+    object-fit: cover;
+}
