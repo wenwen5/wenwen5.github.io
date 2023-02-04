@@ -1,0 +1,30 @@
+.frame {
+    background-color:rgb(240, 248, 255, 0.2);
+    margin: 1vw 10vw 1vw 10vw;
+}
+
+.one-piece {
+    padding: 1vw 5vw 1vw 5vw;
+}
+
+.content-time {
+    background-color:rgba(127, 255, 212, 0.1);
+    padding: 1vw 1vw 1vw 1vw;
+}
+
+.time {
+    text-align: left;
+    text-indent: 0.3vw;
+}
+
+.p-content {
+    text-align: left;
+    text-indent: 2vw;
+    font-size:1.3vw;
+    padding: 0vw 5vw 0vw 5vw;
+}
+
+.picture {
+    width: 30vw;
+    object-fit: cover;
+}
