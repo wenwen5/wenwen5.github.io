@@ -1,0 +1,113 @@
+/**  原本写给导航栏的css，但是这里似乎不需要所以把导航栏扔了。
+.navigation{
+    background-image:linear-gradient(135deg,rgb(180, 207, 250) 0%,rgb(182, 207, 250) 2.7%,rgb(184, 207, 250) 5.4%,rgb(186, 207, 250) 8.1%,rgb(188, 207, 250) 10.8%,rgb(190, 207, 250) 13.5%,rgb(192, 207, 250) 16.2%,rgb(194, 207, 250) 18.9%,rgb(196, 207, 250) 21.6%,rgb(198, 207, 250) 24.3%,rgb(200, 207, 250) 27%,rgb(202, 207, 250) 29.7%,rgb(204, 207, 250) 32.4%,rgb(206, 207, 250) 35.1%,rgb(208, 207, 250) 37.8%,rgb(210, 207, 250) 40.5%,rgb(212, 207, 250) 43.2%,rgb(214, 207, 250) 45.9%,rgb(216, 207, 250) 48.6%,rgb(218, 207, 250) 51.3%,rgb(220, 207, 250) 54.1%,rgb(222, 207, 250) 56.8%,rgb(224, 207, 250) 59.4%,rgb(226, 207, 250) 62.1%,rgb(228, 207, 250) 64.9%,rgb(230, 207, 250) 67.6%,rgb(232, 207, 250) 70.3%,rgb(234, 207, 250) 73.0%,rgb(236, 207, 250) 75.7%,rgb(238, 207, 250) 78.4%,rgb(240, 207, 250) 81.1%,rgb(242, 207, 250) 83.8%,rgb(244, 207, 250) 86.5%,rgb(246, 207, 250) 89.2%,rgb(248, 207, 250) 91.9%,rgb(250, 207, 250) 94.6%,rgb(252, 207, 250) 97.3%,rgb(254, 207, 250) 100%);
+    width:5vw;
+    height:5vw;
+    position:absolute;
+    z-index:0;
+    overflow:hidden;
+    border-radius:20px;
+}
+
+.navigation:hover{
+    animation:navigate 100ms ;
+    animation-timing-function:linear;
+    animation-fill-mode:forwards;
+}
+
+@keyframes navigate 
+{
+    100%{
+        width:20vw;
+        height:50vh;
+    }
+}
+
+.a-navigation:link {
+    color:rgb(95, 32, 255);
+    text-decoration:none;
+}
+
+.a-navigation:visited {
+    color:rgb(95, 32, 255);
+    text-decoration:none;
+}
+
+.a-navigation:hover {
+    color:#c935ff;
+    text-decoration:none;
+}
+
+.a-navigation:active {
+    color:#ffa9ff;
+    text-decoration:none;
+}
+**/
+
+.list{
+    padding-left:5vw;
+    padding-top:8vh;
+    font-size:1.5vw;
+    line-height:3vw;
+}
+
+li::marker{
+    content:"▷ ";
+}
+
+body{
+    background-image:url("background.jpg");
+    background-repeat:no-repeat;
+    background-position-x:center;
+    background-position-y:10%;
+}
+
+.cover{
+    background-color:rgba(256,256,256,0.7);
+    margin:0 10% 0 10%;
+    height:93vh;
+    text-indent:32px;
+    border-radius: 10px;
+}
+
+.title{
+    text-align:center;
+    padding-top:10vh;
+}
+
+.list-hp{
+    padding-left:5vw;
+    line-height:3vw;
+    font-weight:300;
+}
+
+.content{
+    margin:0 32px 0 32px;
+}
+
+
+.p-content{
+    text-indent:32px;
+    font-weight:300;
+}
+
+
+.a-content:link {
+    color:rgb(181, 70, 255);
+    text-decoration:underline;
+}
+
+.a-content:visited {
+    color:rgb(255, 43, 110);
+    text-decoration:none;
+}
+
+.a-content:hover {
+    color:#19ffd9;
+    text-decoration:none;
+}
+
+.a-content:active {
+    color:#a9ffea;
+    text-decoration:none;
+}
