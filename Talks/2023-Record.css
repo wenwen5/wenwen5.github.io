@@ -1,11 +1,75 @@
+body {
+margin:0;
+}
 
 h1 {
-    margin-left: 10vw;
+    margin-left: 6vw;
 }
 
 .frame {
-    background-color:rgb(240, 248, 255, 0.2);
-    margin: 1vw 10vw 1vw 10vw;
+
+    background-color:rgb(241, 243, 244);
+    margin: 0 10vw 1vw 10vw;
+}
+
+.top-h1 {
+    margin-top:40px;
+    margin-left:10vw;
+    background-color:rgb(249, 249, 249);
+    height: 5vw;
+    font-size:1.5vw;
+    line-height:5vw;
+}
+
+.left-bar {
+    top:0;
+    width:13.5vw;
+    height:100%;
+    position:fixed;
+    background-color:rgb(228, 250, 246);
+    z-index:20;
+}
+
+.right-bar {
+    top:0;
+    margin-left:85vw;
+    width:15vw;
+    height:100%;
+    position:fixed;
+    background-color:rgb(248, 227, 232);
+    z-index:20;
+    overflow:hidden;
+}
+
+.top-bar {
+    top:0;
+    height:40px;
+    background-color:rgb(249, 249, 249);
+    z-index:40;
+    position:fixed;
+    width:100%;
+    box-shadow:0 1px 5px 1px rgb(0, 0, 0, 0.05);
+}
+
+.top-bar-a {
+    margin-left:3.5vw;
+    font-size:18px;
+    line-height:40px;
+}
+
+.top-bar-a:link {
+    color:rgb(119, 119, 119);
+    text-decoration:none;
+}
+
+.top-bar-a:visited {
+    color:rgb(119, 119, 119);
+    text-decoration:none;
+}
+
+.top-bar-a:active {
+    color:rgb(169, 169, 169);
+    text-decoration:none;
 }
 
 .one-piece {
@@ -13,7 +77,7 @@ h1 {
 }
 
 .content-time {
-    background-color:rgba(127, 255, 212, 0.1);
+    background-color:rgba(255, 255, 255, 0.626);
     padding: 1vw 1vw 1vw 1vw;
 }
 
