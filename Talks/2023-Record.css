@@ -1,5 +1,6 @@
 body {
-margin:0;
+    margin:0;
+    font-family: "Source Sans Pro","Hiragino Sans GB","Microsoft Yahei",SimSun,Helvetica,Arial,Sans-serif,monospace;
 }
 
 h1 {
@@ -74,16 +75,20 @@ h1 {
 
 .one-piece {
     padding: 1vw 5vw 1vw 5vw;
+    box-shadow:0 1px 3px rgb(0, 0, 0, 0.05);
 }
 
 .content-time {
     background-color:rgba(255, 255, 255, 0.626);
     padding: 1vw 1vw 1vw 1vw;
+    border-radius: 5px;
+    box-shadow:0 1px 3px rgb(0, 0, 0, 0.05);
 }
 
 .time-p {
     text-align: left;
     text-indent: 0.3vw;
+    color:rgb(119, 119, 119);
 }
 
 .p-content {
@@ -91,13 +96,17 @@ h1 {
     text-indent: 2vw;
     font-size:1.3vw;
     padding: 0vw 5vw 0vw 5vw;
+    color:rgb(119, 119, 119);
 }
+
+
 
 .p-content-right {
     text-align: right;
     text-indent: 2vw;
     font-size:1.3vw;
     padding: 0vw 5vw 0vw 5vw;
+    color:rgb(119, 119, 119);
 }
 
 .picture-full {
@@ -108,4 +117,21 @@ h1 {
 .picture-half {
     width: 30vw;
     object-fit: cover;
+}
+
+.a-content-song:link {
+    color:rgb(255, 178, 187);
+    text-decoration: none;
+}
+
+.a-content-song:visited {
+    color:rgb(244, 204, 255);
+    text-decoration: none;
+}
+
+.p-content-song {
+    text-align: left;
+    text-indent: 2vw;
+    font-size:1.3vw;
+    padding: 0vw 5vw 0vw 5vw;
 }
