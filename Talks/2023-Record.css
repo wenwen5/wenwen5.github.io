@@ -88,7 +88,8 @@ h1 {
 .time-p {
     text-align: left;
     text-indent: 0.3vw;
-    color:rgb(119, 119, 119);
+    color:rgba(119, 119, 119, 0.6);
+    font-weight:250;
 }
 
 .p-content {
