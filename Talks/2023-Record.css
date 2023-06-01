@@ -137,13 +137,24 @@ h1 {
     padding: 0vw 5vw 0vw 5vw;
 }
 
-.left-index {
-	padding-top:40%;
-	padding-left:7%;
-	text-align: left;
+.left-index-1 {
+    padding-top:40%;
+    padding-left:7%;
+    text-align: left;
     font-size:1.3vw;
     color:rgb(119, 119, 119);
 	
+}
+
+.left-index {
+    padding-top:5%;
+    padding-left:1%;
+    font-size:1.3vw;
+    color:rgb(119, 119, 119);
+    top:0;
+    position:fixed;
+    z-index:30;
+    font-weight:100;
 }
 
 .a-left-index {
