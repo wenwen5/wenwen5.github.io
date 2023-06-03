@@ -3,6 +3,24 @@ body {
     font-family: "Source Sans Pro","Hiragino Sans GB","Microsoft Yahei",SimSun,Helvetica,Arial,Sans-serif,monospace;
 }
 
+@font-face {
+    font-family:font-01;
+    url(fonts/font-01.ttf);
+}
+
+@font-face {
+    font-family:font-02;
+    url(fonts/font-02.ttf);
+}
+
+.font-01 {
+    font-family:font-01;
+}
+
+.font-02 {
+    font-family:font-02;
+}
+
 h1 {
     margin-left: 6vw;
 }
