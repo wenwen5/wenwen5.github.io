@@ -1,0 +1,27 @@
+@font-face {
+    font-family:font-01;
+    /*字语素笺体*/
+    src: url(fonts/font-01.ttf);
+}
+
+.font-01 {
+	  font-family:font-01;
+    text-align: left;
+    text-indent: 48px;
+    font-size: 24px;
+	  letter-spacing:5px;
+}
+
+@font-face {
+    font-family:font-02;
+    /*你是我的星星糖*/
+    src: url(fonts/font-02.ttf);
+}
+
+.font-02 {
+	  font-family:font-02;
+    text-align: left;
+    text-indent: 48px;
+    font-size: 24px;
+	  letter-spacing:5px;
+}
