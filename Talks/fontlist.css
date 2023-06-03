@@ -4,12 +4,12 @@
     src: url(fonts/font-01.ttf);
 }
 
-.font-01 {
-	  font-family:font-01;
+.p-font-01 {
+    font-family:font-01;
     text-align: left;
     text-indent: 48px;
     font-size: 24px;
-	  letter-spacing:5px;
+    letter-spacing:5px;
 }
 
 @font-face {
@@ -18,10 +18,10 @@
     src: url(fonts/font-02.ttf);
 }
 
-.font-02 {
-	  font-family:font-02;
+.p-font-02 {
+    font-family:font-02;
     text-align: left;
     text-indent: 48px;
     font-size: 24px;
-	  letter-spacing:5px;
+    letter-spacing:5px;
 }
