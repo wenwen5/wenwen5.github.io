@@ -5,12 +5,12 @@ body {
 
 @font-face {
     font-family:font-01;
-    url('fonts/font-01.ttf');
+    src:url('./fonts/font-01.ttf');
 }
 
 @font-face {
     font-family:font-02;
-    url('fonts/font-02.ttf');
+    src:url('./fonts/font-02.ttf');
 }
 
 .font-01 {
