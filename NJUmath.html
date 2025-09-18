@@ -35,9 +35,9 @@ h1{font-size:2.8rem;color:var(--primary);margin-bottom:10px;text-shadow:2px 2px 
 .diary-content{line-height:1.6;color:#3e3e3e;font-size:1.05rem;flex-grow:1;min-height:80px;overflow-wrap:break-word;outline:0;border:1px dashed transparent;transition:border .3s;padding:4px}
 .diary-content:focus{border-color:var(--primary)}
 
-/* 仅保留新增按钮 */
-.add-button{position:fixed;bottom:30px;right:30px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;border:none;font-size:2rem;cursor:pointer;box-shadow:0 5px 15px rgba(255,107,107,.4);transition:transform .3s,box-shadow .3s;display:flex;align-items:center;justify-content:center;z-index:100}
-.add-button:hover{transform:scale(1.1) rotate(90deg);box-shadow:0 8px 20px rgba(255,107,107,.6)}
+/* 导出按钮 - 常驻 */
+.export-button{position:fixed;bottom:30px;right:30px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--secondary),var(--primary));color:#fff;border:none;font-size:1.4rem;cursor:pointer;box-shadow:0 5px 15px rgba(255,107,107,.4);transition:transform .3s,box-shadow .3s;display:flex;align-items:center;justify-content:center;z-index:100}
+.export-button:hover{transform:scale(1.1) rotate(90deg);box-shadow:0 8px 20px rgba(255,107,107,.6)}
 
 footer{text-align:center;padding:30px 0;color:#666;font-size:.9rem;margin-top:40px}
 .empty-state{text-align:center;padding:40px;color:#888;font-style:italic}
@@ -60,16 +60,17 @@ footer{text-align:center;padding:30px 0;color:#666;font-size:.9rem;margin-top:40
     </div>
   </header>
   <div class="diary-grid" id="diary-container"></div>
-  <button class="add-button" id="add-button">+</button>
+  <button class="export-button" id="export-button" title="导出 JSON">⎘</button>
   <footer>你怎么知道我不会数学 · © 2025</footer>
 </div>
 <div class="toast" id="toast"></div>
 
 <script>
 /* ===== 数据层 ===== */
-let diaries=JSON.parse(localStorage.getItem('diaries'))||[];
-let sortNewestFirst=true;
+let diaries=[]; // 先留空，远程读取成功后再赋值
 const toast=document.getElementById('toast');
+let sortNewestFirst=true;
+
 /* ===== 工具 ===== */
 const $=s=>document.querySelector(s);
 const formatDate=ts=>{
@@ -81,6 +82,21 @@ function toastTip(msg){
   toast.classList.add('show');
   setTimeout(()=>toast.classList.remove('show'),3000);
 }
+
+/* ===== 优先读取远程 diaries.json ===== */
+fetch('diaries.json')
+  .then(r=>r.json())
+  .then(remote=>{
+    diaries=remote;
+    save(); // 写一份到本地，方便离线看
+    renderDiaries();
+  })
+  .catch(()=>{
+    // 远程失败或文件不存在：用本地（空数组）
+    diaries=JSON.parse(localStorage.getItem('diaries'))||[];
+    renderDiaries();
+  });
+
 /* ===== 渲染 ===== */
 function renderDiaries(){
   const c=$('#diary-container');
@@ -90,33 +106,41 @@ function renderDiaries(){
   sorted.forEach(d=>{
     const card=document.createElement('div');card.className='diary-card';
     card.innerHTML=`<div class="date">${formatDate(d.ts)}</div>
-      <div class="diary-content" contenteditable data-id="${d.id}">${d.txt}</div>`;
+      <div class="diary-content" contenteditable data-id="${d.id}">${d.txt.replace(/\n/g,'<br>')}</div>`;
     c.appendChild(card);
   });
   attachHandlers();
 }
+
 function attachHandlers(){
-  /* 保存编辑 */
+  /* 保存编辑（只读，仍可改本地，不提交） */
   document.querySelectorAll('.diary-content').forEach(el=>{
     el.addEventListener('blur',()=>{
       const id=+el.dataset.id,old=diaries.find(x=>x.id===id).txt;
-      const now=el.textContent.trim();
-      if(!now){el.textContent=old;return;}
+      const now=el.innerHTML;
+      if(!now.trim()){el.innerHTML=old;return;}
       if(now!==old){diaries.find(x=>x.id===id).txt=now;save();}
     });
   });
 }
-/* ===== 新增 ===== */
-$('#add-button').addEventListener('click',()=>{
-  const ts=Date.now();
-  diaries.unshift({id:ts,ts:ts,txt:''});save();renderDiaries();
-  setTimeout(()=>{const el=document.querySelector(`[data-id="${ts}"]`);if(el){el.focus();}},0);
+
+/* ===== 导出 ===== */
+$('#export-button').addEventListener('click',()=>{
+  const blob=new Blob([JSON.stringify(diaries,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download='diaries.json';a.click();
+  URL.revokeObjectURL(url);
+  toastTip('已导出 diaries.json，请提交到 GitHub 仓库根目录');
 });
+
 /* ===== 排序 ===== */
 $('#sort-newest').addEventListener('click',()=>{sortNewestFirst=true;$('.sort-btn').toggleClass('active');renderDiaries();});
 $('#sort-oldest').addEventListener('click',()=>{sortNewestFirst=false;$('.sort-btn').toggleClass('active');renderDiaries();});
+
 /* ===== 存储 ===== */
 function save(){localStorage.setItem('diaries',JSON.stringify(diaries));}
+
 /* ===== 启动 ===== */
 renderDiaries();
 </script>
