@@ -111,17 +111,7 @@ function renderDiaries(){
   attachHandlers();
 }
 
-function attachHandlers(){
-  /* 保存编辑（只读，仍可改本地，不提交） */
-  document.querySelectorAll('.diary-content').forEach(el=>{
-    el.addEventListener('blur',()=>{
-      const id=+el.dataset.id,old=diaries.find(x=>x.id===id).txt;
-      const now=el.innerHTML;
-      if(!now.trim()){el.innerHTML=old;return;}
-      if(now!==old){diaries.find(x=>x.id===id).txt=now;save();}
-    });
-  });
-}
+
 
 /* ===== 导出 ===== */
 $('#export-button').addEventListener('click',()=>{
