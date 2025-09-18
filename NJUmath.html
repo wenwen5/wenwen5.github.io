@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>NJUmath</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+:root{
+  --left-bg:#ffe6e6;      
+  --right-bg:#e6fff5;     
+  --center-bg:#ffffff;    
+  --card-bg:rgba(254, 173, 144, 0.25); 
+  --primary:#ff6b6b;      
+  --secondary:#ef909b;    
+  --danger:#e53935;
+  --radius:15px;
+  --shadow:0 10px 20px rgba(0,0,0,.08);
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,Tahoma,Geneva,Verdana,sans-serif}
+body{min-height:100vh;display:grid;grid-template-columns:1fr 1200px 1fr;background:var(--center-bg);color:#333}
+body::before{content:'';grid-column:1;background:var(--left-bg)}
+body::after{content:'';grid-column:3;background:var(--right-bg)}
+.container{grid-column:2;max-width:1200px;width:100%;margin:0 auto;padding:20px}
+header{text-align:center;padding:30px 0;margin-bottom:30px}
+h1{font-size:2.8rem;color:var(--primary);margin-bottom:10px;text-shadow:2px 2px 4px rgba(0,0,0,.1)}
+.subtitle{font-size:1.2rem;color:var(--secondary);font-weight:300;margin-bottom:20px}
+.controls{display:flex;justify-content:center;gap:15px;margin-bottom:30px}
+.sort-btn{padding:10px 20px;background:rgba(255,107,107,.1);border:none;border-radius:20px;color:var(--primary);font-weight:500;cursor:pointer;transition:all .3s}
+.sort-btn:hover{background:rgba(255,107,107,.2)}
+.sort-btn.active{background:var(--primary);color:#fff}
+.diary-grid{display: grid;grid-template-columns: repeat(2, 1fr);gap: 40px;padding: 40px 0;justify-content: center;}
+.diary-card{background: var(--card-bg);border-radius: var(--radius);padding: 35px; box-shadow: var(--shadow);
+transition: transform .3s, box-shadow .3s;min-height: 120px;display: flex;flex-direction: column;height: auto;
+font-size: 1.15rem;}
+.diary-card:hover{transform:translateY(-5px);box-shadow:0 15px 30px rgba(0,0,0,.15)}
+.date{font-size:.9rem;color:var(--primary);font-weight:500;padding:5px 12px;background:rgba(255,107,107,.1);border-radius:10px;margin-bottom:15px;display:inline-block;width:auto}
+.time{font-size:.8rem;color:var(--secondary);margin-left:8px}
+.diary-content{line-height:1.6;color:#3e3e3e;font-size:1.05rem;flex-grow:1;min-height:80px;overflow-wrap:break-word;outline:0;border:1px dashed transparent;transition:border .3s;padding:4px}
+.diary-content:focus{border-color:var(--primary)}
+.card-actions{display:flex;justify-content:flex-end;margin-top:15px;gap:10px}
+.action-btn{background:none;border:none;color:var(--primary);cursor:pointer;font-size:.9rem;opacity:.7;transition:opacity .3s}
+.action-btn:hover{opacity:1}
+.delete-btn{color:var(--danger)}
+.add-button{position:fixed;bottom:30px;right:30px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;border:none;font-size:2rem;cursor:pointer;box-shadow:0 5px 15px rgba(255,107,107,.4);transition:transform .3s,box-shadow .3s;display:flex;align-items:center;justify-content:center;z-index:100}
+.add-button:hover{transform:scale(1.1) rotate(90deg);box-shadow:0 8px 20px rgba(255,107,107,.6)}
+footer{text-align:center;padding:30px 0;color:#666;font-size:.9rem;margin-top:40px}
+.empty-state{text-align:center;padding:40px;color:#888;font-style:italic}
+.toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:#323232;color:#fff;padding:10px 18px;border-radius:20px;font-size:.9rem;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
+.undo-btn{margin-left:12px;color:#ffd54f;cursor:pointer;font-weight:700}
+@media(max-width:768px){
+  body{grid-template-columns:0 1fr 0}
+  .diary-grid{grid-template-columns:1fr}
+  h1{font-size:2.2rem}
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>MATH IN NJU</h1>
+    <div class="controls">
+      <button class="sort-btn active" id="sort-newest">最新在前</button>
+      <button class="sort-btn" id="sort-oldest">最旧在前</button>
+    </div>
+  </header>
+  <div class="diary-grid" id="diary-container"></div>
+  <button class="add-button" id="add-button">+</button>
+  <footer>你怎么知道我不会数学 · © 2025</footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ===== 数据层 ===== */
+let diaries=JSON.parse(localStorage.getItem('diaries'))||[];
+let sortNewestFirst=true;
+const toast=document.getElementById('toast');
+/* ===== 工具 ===== */
+const $=s=>document.querySelector(s);
+const formatDate=ts=>{
+  const d=new Date(ts);
+  return d.toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'short'})+'<span class="time">'+d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})+'</span>';
+};
+function toastTip(msg,undo){
+  toast.innerHTML=msg+(undo?`<span class="undo-btn" onclick="${undo}">撤销</span>`:'');
+  toast.classList.add('show');
+  setTimeout(()=>toast.classList.remove('show'),3000);
+}
+/* ===== 渲染 ===== */
+function renderDiaries(){
+  const c=$('#diary-container');
+  c.innerHTML='';
+  if(!diaries.length){c.innerHTML='<div class="empty-state">什么都没有</div>';return;}
+  const sorted=[...diaries].sort((a,b)=>sortNewestFirst?b.ts-a.ts:a.ts-b.ts);
+  sorted.forEach(d=>{
+    const card=document.createElement('div');card.className='diary-card';
+    card.innerHTML=`<div class="date">${formatDate(d.ts)}</div>
+      <div class="diary-content" contenteditable data-id="${d.id}">${d.txt}</div>
+      <div class="card-actions"><button class="action-btn delete-btn" data-id="${d.id}">删除</button></div>`;
+    c.appendChild(card);
+  });
+  attachHandlers();
+}
+function attachHandlers(){
+  /* 保存编辑 */
+  document.querySelectorAll('.diary-content').forEach(el=>{
+    el.addEventListener('blur',()=>{
+      const id=+el.dataset.id,old=diaries.find(x=>x.id===id).txt;
+      const now=el.textContent.trim();
+      if(!now){el.textContent=old;return;} // 空内容恢复原文字
+      if(now!==old){diaries.find(x=>x.id===id).txt=now;save();}
+    });
+  });
+  /* 删除+撤销 */
+  document.querySelectorAll('.delete-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>softDelete(+btn.dataset.id));
+  });
+}
+function softDelete(id){
+  const idx=diaries.findIndex(x=>x.id===id);
+  if(idx===-1)return;
+  const backup=diaries[idx];
+  diaries.splice(idx,1);save();renderDiaries();
+  toastTip('日记已删除','restore('+backup.id+',`'+encodeURIComponent(JSON.stringify(backup))+'`)');
+  window.restore=(id,raw)=>{diaries.push(JSON.parse(decodeURIComponent(raw)));save();renderDiaries();};
+}
+/* ===== 新增 ===== */
+$('#add-button').addEventListener('click',()=>{
+  const ts=Date.now();
+  diaries.unshift({id:ts,ts:ts,txt:''});save();renderDiaries();
+  setTimeout(()=>{const el=document.querySelector(`[data-id="${ts}"]`);if(el){el.focus();}},0);
+});
+/* ===== 排序 ===== */
+$('#sort-newest').addEventListener('click',()=>{sortNewestFirst=true;$('.sort-btn').toggleClass('active');renderDiaries();});
+$('#sort-oldest').addEventListener('click',()=>{sortNewestFirst=false;$('.sort-btn').toggleClass('active');renderDiaries();});
+/* ===== 存储 ===== */
+function save(){localStorage.setItem('diaries',JSON.stringify(diaries));}
+/* ===== 启动 ===== */
+renderDiaries();
+</script>
+</body>
+</html>
