@@ -105,7 +105,7 @@ function renderDiaries(){
   sorted.forEach(d=>{
     const card=document.createElement('div');card.className='diary-card';
     card.innerHTML=`<div class="date">${formatDate(d.ts)}</div>
-      <div class="diary-content" contenteditable data-id="${d.id}">${d.txt.replace(/\n/g,'<br>')}</div>`;
+      <div class="diary-content" data-id="${d.id}">${d.txt.replace(/\n/g,'<br>')}</div>`;
     c.appendChild(card);
   });
   attachHandlers();
@@ -135,4 +135,5 @@ renderDiaries();
 </script>
 </body>
 </html>
+
 
