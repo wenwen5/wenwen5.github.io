@@ -41,8 +41,6 @@ font-size: 1.15rem;}
 .action-btn{background:none;border:none;color:var(--primary);cursor:pointer;font-size:.9rem;opacity:.7;transition:opacity .3s}
 .action-btn:hover{opacity:1}
 .delete-btn{color:var(--danger)}
-.add-button{position:fixed;bottom:30px;right:30px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff;border:none;font-size:2rem;cursor:pointer;box-shadow:0 5px 15px rgba(255,107,107,.4);transition:transform .3s,box-shadow .3s;display:flex;align-items:center;justify-content:center;z-index:100}
-.add-button:hover{transform:scale(1.1) rotate(90deg);box-shadow:0 8px 20px rgba(255,107,107,.6)}
 footer{text-align:center;padding:30px 0;color:#666;font-size:.9rem;margin-top:40px}
 .empty-state{text-align:center;padding:40px;color:#888;font-style:italic}
 .toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:#323232;color:#fff;padding:10px 18px;border-radius:20px;font-size:.9rem;opacity:0;transition:opacity .3s;pointer-events:none}
@@ -65,7 +63,6 @@ footer{text-align:center;padding:30px 0;color:#666;font-size:.9rem;margin-top:40
     </div>
   </header>
   <div class="diary-grid" id="diary-container"></div>
-  <button class="add-button" id="add-button">+</button>
   <footer>你怎么知道我不会数学 · © 2025</footer>
 </div>
 <div class="toast" id="toast"></div>
@@ -139,4 +136,5 @@ function save(){localStorage.setItem('diaries',JSON.stringify(diaries));}
 renderDiaries();
 </script>
 </body>
+
 </html>
