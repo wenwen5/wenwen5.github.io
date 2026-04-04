@@ -8,4 +8,4 @@
 
 
 20206.04.05
-是的ai写完了。
+是的ai写完了。旧的项目放在https://github.com/wenwen5/wenwen5.github.io-Ver2.0了。
