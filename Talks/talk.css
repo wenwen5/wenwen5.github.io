@@ -1,0 +1,235 @@
+.talk-main {
+    max-width: 1100px;
+}
+
+.talk-container {
+    display: flex;
+    gap: 0;
+    margin-top: 40px;
+    position: relative;
+}
+
+.talk-sidebar {
+    flex-shrink: 0;
+    width: 100px;
+    position: relative;
+}
+
+.talk-nav {
+    position: sticky;
+    top: 88px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.talk-year {
+    padding: 12px 16px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: all 0.2s ease;
+    text-align: right;
+    border-right: 2px solid transparent;
+    letter-spacing: 0.05em;
+}
+
+.talk-year:hover {
+    color: var(--text-primary);
+}
+
+.talk-year.active {
+    color: var(--accent);
+    border-right-color: var(--accent);
+    background: linear-gradient(90deg, var(--bg-tertiary), transparent);
+}
+
+.talk-content {
+    flex: 1;
+    min-width: 0;
+    padding-left: 48px;
+    border-left: 1px solid var(--border);
+}
+
+.talk-header {
+    margin-bottom: 40px;
+}
+
+.talk-title {
+    font-family: 'Noto Serif SC', serif;
+    font-size: 2.2rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.talk-subtitle {
+    font-size: 1rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.talk-entries {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+
+.talk-entry {
+    position: relative;
+    padding: 28px 32px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: all 0.3s ease;
+}
+
+.talk-entry::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    border-radius: 4px 0 0 4px;
+}
+
+.talk-entry:hover {
+    transform: translateX(4px);
+    box-shadow: var(--shadow);
+}
+
+.talk-entry:hover::before {
+    opacity: 1;
+}
+
+.talk-entry-time {
+    font-size: 0.8rem;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+    font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    letter-spacing: 0.02em;
+}
+
+.talk-entry-content {
+    color: var(--text-secondary);
+    line-height: 1.9;
+    font-size: 0.95rem;
+}
+
+.talk-entry-content p {
+    margin-bottom: 14px;
+}
+
+.talk-entry-content p:last-child {
+    margin-bottom: 0;
+}
+
+.talk-entry-content img {
+    max-width: 100%;
+    border-radius: 6px;
+    margin: 16px 0;
+    display: block;
+    transition: transform 0.3s ease;
+}
+
+.talk-entry-content img:hover {
+    transform: scale(1.01);
+}
+
+.talk-entry-content a {
+    color: var(--accent);
+    text-decoration: none;
+    word-break: break-all;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s ease;
+}
+
+.talk-entry-content a:hover {
+    border-bottom-color: var(--accent);
+}
+
+.talk-entry-content .p-content-right {
+    text-align: right;
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+.loading {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+}
+
+.empty, .error {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+}
+
+.error {
+    color: #ef4444;
+}
+
+@media (max-width: 768px) {
+    .talk-container {
+        flex-direction: column;
+        gap: 32px;
+    }
+
+    .talk-sidebar {
+        width: 100%;
+    }
+
+    .talk-nav {
+        position: static;
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .talk-year {
+        flex: 1;
+        min-width: 60px;
+        text-align: center;
+        border-right: none;
+        border-bottom: 2px solid transparent;
+        padding: 10px 16px;
+        background: var(--bg-secondary);
+        border-radius: 8px;
+    }
+
+    .talk-year.active {
+        border-bottom-color: var(--accent);
+        background: var(--bg-tertiary);
+    }
+
+    .talk-content {
+        padding-left: 0;
+        border-left: none;
+    }
+
+    .talk-entry {
+        padding: 20px;
+    }
+}
+
+.nav .nav-link.active {
+    color: var(--accent);
+}
+
+.nav .nav-link.active::after {
+    width: 100%;
+}

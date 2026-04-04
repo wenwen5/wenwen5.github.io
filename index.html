@@ -1,52 +1,103 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="index.css">
-    <title>Static Paradise</title>
+    <title>wenwen5's Garden</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="cover">
-        <h2 class="title">
-            Static Paradise
-        </h2>
-        <div class="content">
-        <p>
-            Brief Introduction
-        </p>
-        <p class="p-content">
-            换了一个看起来至少有点样子的homepage，虽然原本不是给这个blog的类似物准备的。但是想着再开一个githubpage我大概是没有毅力坚持下来的吧于是就直接放在这里了。
-        </p>
-		<p class="p-content">
-            其实不满意的地方还挺多的，不过估计没什么时间去优化了。至少在下次花时间写之前都用这个吧。
-        </p>
-		<p>
-			20250918：用ai写了一个新的页面，来记录在南大学数学的所想。ai真厉害。
-		</p>
-        <p class="p-content">
-            点不开的是还没做好。（划掉）（是没打算做）
-        </p>
-        <!--<br>--><!--上面一句删掉之后把这个换行加上-->
-        <p>
-            Content
-        </p>
-        <ul class="list-hp">
-            <li><a class="a-content" href="Geo/list.html">Mathematics</a></li>
-            <li><a class="a-content" href="Talks/2026.html">小日记（月？）</a></li>
-            <li><a class="a-content" href="NJUmath.html">NJU数学日记</a></li>
-            <li><a class="a-content" href="Articles/articles.html">Articles</a></li>
-        </ul>
-        <br>
-        <p>
-            备注：画师是Anmi，另外推荐电脑阅读，因为有些css好像手机和iPad看不到（说的是font-weight）
-        </p>
+    <header class="header">
+        <div class="header-inner">
+            <a href="index.html" class="logo">wenwen5</a>
+            <nav class="nav">
+                <a href="Talks/index.html" class="nav-link">Talk</a>
+                <a href="Articles/articles.html" class="nav-link">Articles</a>
+            </nav>
+            <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+                <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="5"></circle>
+                    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+                </svg>
+                <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+            </button>
         </div>
-    </div>
+    </header>
+
+    <main class="main">
+        <section class="hero">
+            <h1 class="hero-title">A Place to Think</h1>
+            <p class="hero-subtitle">学数学，偶尔写点东西</p>
+        </section>
+
+        <section class="modules">
+            <a href="Talks/index.html" class="module-card">
+                <div class="module-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                    </svg>
+                </div>
+                <h2 class="module-title">Talk</h2>
+                <p class="module-desc">碎碎念，日常记录</p>
+                <span class="module-arrow">→</span>
+            </a>
+
+            <a href="Articles/articles.html" class="module-card">
+                <div class="module-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                    </svg>
+                </div>
+                <h2 class="module-title">Articles</h2>
+                <p class="module-desc">一些整理过的文章</p>
+                <span class="module-arrow">→</span>
+            </a>
+        </section>
+
+        <section class="credit">
+            <p>页面重构 by <a href="https://opencode.ai" target="_blank">opencode</a></p>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <p>wenwen5 &copy; 2026</p>
+    </footer>
+
+    <script>
+        const themeToggle = document.getElementById('themeToggle');
+        const html = document.documentElement;
+        
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        html.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+
+        themeToggle.addEventListener('click', () => {
+            const current = html.getAttribute('data-theme');
+            const next = current === 'light' ? 'dark' : 'light';
+            html.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+            updateThemeIcon(next);
+        });
+
+        function updateThemeIcon(theme) {
+            const sun = document.querySelector('.icon-sun');
+            const moon = document.querySelector('.icon-moon');
+            if (theme === 'dark') {
+                sun.style.display = 'block';
+                moon.style.display = 'none';
+            } else {
+                sun.style.display = 'none';
+                moon.style.display = 'block';
+            }
+        }
+    </script>
 </body>
 </html>
-
-
-
-
