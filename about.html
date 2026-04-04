@@ -3,16 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wenwen5's Blog</title>
+    <title>About Me - wenwen5</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="page.css">
 </head>
 <body>
     <header class="header">
         <div class="header-inner">
-            <a href="about.html" class="logo">About Me</a>
+            <a href="index.html" class="logo">← Back</a>
             <nav class="nav">
                 <a href="Talks/index.html" class="nav-link">Talk</a>
                 <a href="Articles/articles.html" class="nav-link">Articles</a>
@@ -30,41 +31,44 @@
     </header>
 
     <main class="main">
-        <section class="hero">
-            <h1 class="hero-title">Wenwen5's Blog</h1>
-            <p class="hero-subtitle" id="greeting">学数学，偶尔写点东西</p>
-        </section>
+        <article class="about-content">
+            <h1 class="about-title">About Me</h1>
+            
+            <section class="about-section">
+                <h2>基本资料</h2>
+                <p><strong>Name:</strong> wenwen5</p>
+                <p><strong>Location:</strong> 江苏南京</p>
+                <p><strong>Education:</strong> 南京大学 数学系</p>
+            </section>
 
-        <section class="modules">
-            <a href="Talks/index.html" class="module-card">
-                <div class="module-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
-                    </svg>
-                </div>
-                <h2 class="module-title">Talk</h2>
-                <p class="module-desc">碎碎念，日常记录</p>
-                <span class="module-arrow">→</span>
-            </a>
+            <section class="about-section">
+                <h2>关于我</h2>
+                <p>这是opencode生成的test文本——一个热爱数学的学生，偶尔写点东西记录生活。</p>
+                <p>喜欢探索有趣的事物，享受学习新知识的过程。</p>
+            </section>
 
-            <a href="Articles/articles.html" class="module-card">
-                <div class="module-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                        <polyline points="14 2 14 8 20 8"></polyline>
-                        <line x1="16" y1="13" x2="8" y2="13"></line>
-                        <line x1="16" y1="17" x2="8" y2="17"></line>
-                    </svg>
-                </div>
-                <h2 class="module-title">Articles</h2>
-                <p class="module-desc">一些整理过的文章</p>
-                <span class="module-arrow">→</span>
-            </a>
-        </section>
+            <section class="about-section">
+                <h2>兴趣爱好</h2>
+                <ul>
+                    <li>数学 - 享受逻辑推导的乐趣</li>
+                    <li>游戏 - 各种单机游戏爱好者</li>
+                    <li>音乐 - 喜欢Vocaloid</li>
+                    <li>阅读 - 偶尔看看小说</li>
+                </ul>
+            </section>
 
-        <section class="credit">
-            <p>页面重构 by <a href="https://opencode.ai" target="_blank">opencode</a></p>
-        </section>
+            <section class="about-section">
+                <h2>联系我</h2>
+                <p>GitHub: <a href="https://github.com/wenwen5">wenwen5</a></p>
+                <p>Email: (暂未公开)</p>
+            </section>
+
+            <section class="about-section">
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 40px;">
+                    ↑ 以上为 opencode 生成的 test 文本
+                </p>
+            </section>
+        </article>
     </main>
 
     <footer class="footer">
@@ -98,24 +102,6 @@
                 moon.style.display = 'block';
             }
         }
-
-        function updateGreeting() {
-            const hour = new Date().getUTCHour() + 8;
-            const realHour = hour >= 24 ? hour - 24 : hour;
-            const greeting = document.getElementById('greeting');
-            if (realHour >= 5 && realHour < 12) {
-                greeting.textContent = '早上好';
-            } else if (realHour >= 12 && realHour < 14) {
-                greeting.textContent = '中午好';
-            } else if (realHour >= 14 && realHour < 18) {
-                greeting.textContent = '下午好';
-            } else if (realHour >= 18 && realHour < 22) {
-                greeting.textContent = '晚上好';
-            } else {
-                greeting.textContent = '夜深了';
-            }
-        }
-        updateGreeting();
     </script>
 </body>
 </html>

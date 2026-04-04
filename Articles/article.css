@@ -1,0 +1,123 @@
+.article-main {
+    max-width: 720px;
+}
+
+.article-content {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px;
+}
+
+.article-header {
+    margin-bottom: 32px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+.article-meta {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+    font-size: 0.85rem;
+}
+
+.article-date {
+    color: var(--text-muted);
+}
+
+.article-tag {
+    color: var(--accent);
+    background: var(--bg-tertiary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+}
+
+.article-title {
+    font-family: 'Noto Serif SC', serif;
+    font-size: 1.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.article-body {
+    color: var(--text-secondary);
+    line-height: 1.8;
+    font-size: 1rem;
+}
+
+.article-body h2 {
+    font-size: 1.4rem;
+    color: var(--text-primary);
+    margin: 32px 0 16px;
+}
+
+.article-body h3 {
+    font-size: 1.15rem;
+    color: var(--text-primary);
+    margin: 24px 0 12px;
+}
+
+.article-body p {
+    margin-bottom: 16px;
+}
+
+.article-body pre {
+    background: var(--bg-tertiary);
+    padding: 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 20px 0;
+}
+
+.article-body code {
+    font-family: 'JetBrains Mono', 'SF Mono', monospace;
+    font-size: 0.9rem;
+}
+
+.article-body blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 16px;
+    margin: 20px 0;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.article-body ul {
+    margin: 16px 0;
+    padding-left: 24px;
+}
+
+.article-body li {
+    margin-bottom: 8px;
+}
+
+.article-footer {
+    margin-top: 40px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.back-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.95rem;
+}
+
+.back-link:hover {
+    text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+    .article-content {
+        padding: 24px;
+    }
+
+    .article-title {
+        font-size: 1.5rem;
+    }
+}

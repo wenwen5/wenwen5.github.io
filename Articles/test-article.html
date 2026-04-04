@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Articles - wenwen5</title>
+    <title>Opencode Test Article - wenwen5</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../styles.css">
-    <link rel="stylesheet" href="articles.css">
+    <link rel="stylesheet" href="article.css">
 </head>
 <body>
     <header class="header">
@@ -30,28 +30,48 @@
         </div>
     </header>
 
-    <main class="main page-main">
-        <div class="page-header">
-            <h1 class="page-title">Articles</h1>
-            <p class="page-subtitle">整理过的文章和技术文档</p>
-        </div>
-
-        <div class="articles-list">
-            <article class="article-card">
+    <main class="main article-main">
+        <article class="article-content">
+            <header class="article-header">
                 <div class="article-meta">
                     <span class="article-date">2026.04.05</span>
                     <span class="article-tag">Test</span>
                 </div>
-                <h2 class="article-title">
-                    <a href="test-article.html">Opencode Test Article</a>
-                </h2>
-                <p class="article-excerpt">这是opencode生成的test article，用于测试页面结构。</p>
-            </article>
+                <h1 class="article-title">Opencode Test Article</h1>
+            </header>
 
-            <div class="test-notice">
-                <p>↑ 以上为 opencode 生成的 test article</p>
+            <div class="article-body">
+                <p>这是 opencode 生成的 test article，用于测试页面结构。</p>
+
+                <h2>测试标题 H2</h2>
+                <p>这是一段测试文字，用来验证文章页面的样式是否正常工作。</p>
+
+                <h3>测试标题 H3</h3>
+                <p>更多测试内容...</p>
+
+                <pre><code>// 测试代码块
+function hello() {
+    console.log("Hello, World!");
+}</code></pre>
+
+                <blockquote>
+                    <p>这是一个测试引用块。</p>
+                </blockquote>
+
+                <ul>
+                    <li>测试列表项 1</li>
+                    <li>测试列表项 2</li>
+                    <li>测试列表项 3</li>
+                </ul>
             </div>
-        </div>
+
+            <footer class="article-footer">
+                <p style="color: var(--text-muted); font-size: 0.85rem;">
+                    ↑ 以上为 opencode 生成的 test 文本
+                </p>
+                <a href="articles.html" class="back-link">← 返回文章列表</a>
+            </footer>
+        </article>
     </main>
 
     <footer class="footer">
