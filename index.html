@@ -100,7 +100,7 @@
         }
 
         function updateGreeting() {
-            const hour = (new Date().getUTCHour() + 8) % 24;
+            const hour = (new Date().getUTCHours() + 8) % 24;
             const greeting = document.getElementById('greeting');
             console.log('hour:', hour, 'greeting:', greeting);
             if (hour >= 5 && hour < 12) {
