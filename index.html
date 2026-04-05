@@ -100,16 +100,15 @@
         }
 
         function updateGreeting() {
-            const hour = new Date().getUTCHour() + 8;
-            const realHour = hour >= 24 ? hour - 24 : hour;
+            const hour = (new Date().getUTCHour() + 8) % 24;
             const greeting = document.getElementById('greeting');
-            if (realHour >= 5 && realHour < 12) {
+            if (hour >= 5 && hour < 12) {
                 greeting.textContent = '早上好';
-            } else if (realHour >= 12 && realHour < 14) {
+            } else if (hour >= 12 && hour < 14) {
                 greeting.textContent = '中午好';
-            } else if (realHour >= 14 && realHour < 18) {
+            } else if (hour >= 14 && hour < 18) {
                 greeting.textContent = '下午好';
-            } else if (realHour >= 18 && realHour < 22) {
+            } else if (hour >= 18 && hour < 22) {
                 greeting.textContent = '晚上好';
             } else {
                 greeting.textContent = '该睡觉了';
