@@ -102,16 +102,17 @@
         function updateGreeting() {
             const hour = (new Date().getUTCHour() + 8) % 24;
             const greeting = document.getElementById('greeting');
+            console.log('hour:', hour, 'greeting:', greeting);
             if (hour >= 5 && hour < 12) {
-                greeting.textContent = '早上好';
+                greeting.innerHTML = '早上好';
             } else if (hour >= 12 && hour < 14) {
-                greeting.textContent = '中午好';
+                greeting.innerHTML = '中午好';
             } else if (hour >= 14 && hour < 18) {
-                greeting.textContent = '下午好';
+                greeting.innerHTML = '下午好';
             } else if (hour >= 18 && hour < 22) {
-                greeting.textContent = '晚上好';
+                greeting.innerHTML = '晚上好';
             } else {
-                greeting.textContent = '该睡觉了';
+                greeting.innerHTML = '该睡觉了';
             }
         }
         updateGreeting();
