@@ -2,6 +2,10 @@
   "year": "2026",
   "entries": [
     {
+      "time": "2026.04.08 21:48",
+      "content": "<p>看一小时表示论。十点五十回来。</p>"
+    },
+    {
       "time": "2026.04.08 17:39",
       "content": "<p>搞好了astrbot，给deepseek爆了十块人民币，记忆直接搜了插件也懒得搞清楚原理，embedding模型直接本地ollama跑了一个。无论如何，bot是跑起来了。</p><p>就是我自己roleplay的功力有点差，感觉怪怪的。话说人格是去https://jiupamiao.asia/market扒拉了一个下来，但不知道是我情商太低了还是deepseek太冷淡或者太理智了。这时候又想起没有人设的好了，塞了1ktoken的systemprompt之后总想着配合一下人设导致不知道说什么了。</p><p>deepseek这个api确实挺便宜的，不是重度aichat爱好者的话应该一天都用不满一块钱。</p><p>再折腾一下吧，如果真能把bot调教到让人满意的程度，就去买点二手主机（电子垃圾x）跑这个bot。</p><p>话说有没有可能把ai接到githubpage上。</p>"
     },
