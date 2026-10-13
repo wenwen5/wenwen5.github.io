@@ -1,0 +1,4002 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProjectRed IC 工作台仿真器</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --panel2: #24282f; --line: #333941;
+    --txt: #d8dee6; --dim: #8b95a3; --accent: #ff9d2e; --ok: #5bd66a; --bad: #ff5b5b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--txt);
+    font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 8px 10px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header .group { display: flex; gap: 6px; align-items: center; }
+  header .sep { width: 1px; height: 22px; background: var(--line); }
+  main { flex: 1; display: flex; min-height: 0; }
+  aside { background: var(--panel); overflow: auto; padding: 8px; }
+  #palette { width: 236px; border-right: 1px solid var(--line); }
+  #inspector { width: 268px; border-left: 1px solid var(--line); }
+  #stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #boardWrap { flex: 1; position: relative; overflow: hidden; }
+  canvas { display: block; position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  #status {
+    padding: 4px 10px; border-top: 1px solid var(--line); background: var(--panel);
+    white-space: pre; overflow-x: auto; color: var(--dim);
+  }
+  #probes { border-top: 1px solid var(--line); background: var(--panel); max-height: 208px; overflow: auto; }
+  button {
+    background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
+    border-radius: 4px; padding: 3px 8px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); color: #1a1a1a; border-color: var(--accent); }
+  button.sw { width: 30px; text-align: center; padding: 3px 0; }
+  h4 { margin: 10px 0 4px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .row { display: flex; flex-wrap: wrap; gap: 4px; }
+  .swatch { width: 22px; height: 20px; border-radius: 3px; border: 1px solid #0006; cursor: pointer; }
+  input[type=text], input[type=number] {
+    background: #14161a; color: var(--txt); border: 1px solid var(--line);
+    border-radius: 4px; padding: 3px 6px; font: inherit; width: 100%;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 2px 6px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; color: var(--dim); }
+  .kv { display: grid; grid-template-columns: 84px 1fr; gap: 2px 8px; font-size: 12px; }
+  .kv div:nth-child(odd) { color: var(--dim); }
+  .hint { color: var(--dim); font-size: 11px; margin-top: 6px; }
+  label.chk { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="toolbar"></header>
+  <main>
+    <aside id="palette"></aside>
+    <section id="stage">
+      <div id="boardWrap"><canvas id="board"></canvas></div>
+      <div id="status">就绪</div>
+      <div id="probes"></div>
+    </section>
+    <aside id="inspector"></aside>
+  </main>
+</div>
+<script>
+const __modules = new Map();
+function __define(id, factory) { __modules.set(id, { factory, exports: null }); }
+function __require(id) {
+  const m = __modules.get(id);
+  if (!m) throw new Error('模块不存在: ' + id + '（可用: ' + [...__modules.keys()].join(', ') + '）');
+  if (m.exports) return m.exports;
+  const exports = {};
+  m.exports = exports;
+  m.factory(exports, __require);
+  return exports;
+}
+
+__define("engine/engine.js", function (exports, require) {
+/**
+ * IC 仿真引擎：逐 tick 推进的离散时间仿真。
+ *
+ * 依据源码（§3.1–3.4）：
+ *  - 每世界 tick 调一次 `IntegratedCircuit.tick()`；先处理排期，再让所有 part `update()`。
+ *  - **组合门延迟 = 0 tick**（`scheduleTick(0)` 同 tick 求值），源码用 `iter < 3` 限幅
+ *    ⇒ 本引擎每 tick 最多跑 3 轮固定点。
+ *  - **导线瞬时**（`ICPropagator` 跑到不动点），每格只降 1 点强度。
+ *  - 门的 `state`：低 4 位 = 输入位图，高 4 位 = 输出位图。
+ *  - **阵列单元**：内部两条互相独立的通道（signal1 = 内部 0x5 / signal2 = 0xa），
+ *    Buffer Cell 把通道 0 的电平搬到通道 1，Invert Cell 取反，Null Cell 两条都不驱动。
+ *  - 上电初始化对应 PR #54 的 `firstSetup()`：放置时立即更新所有 IO 输出。
+ */
+
+                                                                            
+const { DIR_VEC, absoluteDir, opposite } = require('model/types.js');
+const { partSpec } = require('model/catalog.js');
+const { idx, inBounds, ioAt, ioInnerNeighbor, partAt, validateBlueprint } = require('model/blueprint.js');
+const { conductorOf, isArrayCellKind } = require('model/connectivity.js');
+const { MAX_SIGNAL, mostSignificant, vanillaLevel } = require('engine/signal.js');
+const { CHANNELS, NetWorld, } = require('engine/nets.js');
+const { gateLogic, isEmitter, makeRuntime, } = require('engine/gates.js');
+
+                                
+                
+     
+                    
+    
+                                                                            
+                                                                     
+                                                         
+                           
+     
+                         
+ 
+
+                            
+                    
+                
+                                              
+               
+                     
+ 
+
+                                 
+               
+                       
+                       
+                        
+ 
+
+function mulberry32(seed        )               {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+class Engine {
+           bp           ;
+           net          ;
+           warnings           = [];
+           trace               = [];
+           maxIterations        ;
+
+  tick = 0;
+                   rt               ;
+                   rng              ;
+                   ioOutMask = new Int32Array(4);
+                   ioOutBundle = new Int32Array(4);
+
+  constructor(bp           , opts                = {}) {
+    this.bp = bp;
+    this.maxIterations = opts.maxIterations ?? 32;
+
+    const issues = validateBlueprint(bp);
+    const errors = issues.filter((i) => i.level === 'error');
+    if (errors.length > 0) {
+      const head = errors
+        .slice(0, 8)
+        .map((e) => `  - ${e.message}${e.x !== undefined ? ` @(${e.x},${e.y})` : ''}`);
+      const more = errors.length > 8 ? `\n  ...另有 ${errors.length - 8} 条` : '';
+      throw new Error(`蓝图「${bp.name}」校验失败：\n${head.join('\n')}${more}`);
+    }
+    for (const w of issues.filter((i) => i.level === 'warning')) this.warnings.push(w.message);
+    this.checkUnsupportedInteractions();
+
+    this.rt = new Array(bp.w * bp.h);
+    for (let i = 0; i < this.rt.length; i++) this.rt[i] = makeRuntime();
+    this.rng = mulberry32(opts.seed ?? 12345);
+    this.net = new NetWorld(bp);
+    this.runSetups();
+    this.settle();
+  }
+
+  /** 调用各门的 `setup()`（源码在放置/加载时调用，决定初始状态） */
+          runSetups()       {
+    for (let y = 0; y < this.bp.h; y++) {
+      for (let x = 0; x < this.bp.w; x++) {
+        const part = partAt(this.bp, x, y);
+        if (!part || conductorOf(part) || isEmitter(part.kind)) continue;
+        if (partSpec(part.kind).impl !== 'ready') continue;
+        const logic = gateLogic(part.kind);
+        logic.setup?.(this.rt[idx(this.bp, x, y)], this.gateCtx(x, y));
+      }
+    }
+  }
+
+  /** 已知尚未实现的交互，给出明确警告而不是静默忽略 */
+          checkUnsupportedInteractions()       {
+    const bp = this.bp;
+    let found = false;
+    for (let y = 0; y < bp.h && !found; y++) {
+      for (let x = 0; x < bp.w && !found; x++) {
+        const part = partAt(bp, x, y);
+        if (!part || part.kind !== 'wire.bundled') continue;
+        for (const d of [0, 1, 2, 3]         ) {
+          const [dx, dy] = DIR_VEC[d];
+          const other = partAt(bp, x + dx, y + dy);
+          if (other && isArrayCellKind(other.kind)) {
+            this.warnings.push(
+              `集束线缆与阵列单元相邻 @(${x},${y})：该交互（IICBundledEmitter）尚未实现，仿真中会被忽略`,
+            );
+            found = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ 对外输入
+
+  /** 设置 IO 输入端口的**世界侧电平** 0..15（simple：>0 视为通电） */
+  setIOInput(x        , y        , level        )       {
+    const port = ioAt(this.bp, x, y);
+    if (!port) throw new Error(`(${x},${y}) 没有 IO 端口`);
+    if (port.mode !== 'input') throw new Error(`(${x},${y}) 不是输入端口`);
+    port.driven = Math.max(-1, Math.min(15, Math.floor(level)));
+  }
+
+  /** 设置 bundled 输入端口的外部频道（16 个 0/1） */
+  setIOBundleInput(x        , y        , channels          )       {
+    const port = ioAt(this.bp, x, y);
+    if (!port) throw new Error(`(${x},${y}) 没有 IO 端口`);
+    if (port.type !== 'bundled') throw new Error(`(${x},${y}) 不是集束端口`);
+    for (let i = 0; i < 16; i++) port.channels[i] = channels[i] ? 1 : 0;
+  }
+
+  /** 掰一下拉杆 */
+  setLever(x        , y        , on         )       {
+    const part = partAt(this.bp, x, y);
+    if (!part || part.kind !== 'dbg.lever') throw new Error(`(${x},${y}) 不是拉杆`);
+    this.rt[idx(this.bp, x, y)].state2 = on ? 1 : 0;
+  }
+
+  /** 左键点拉杆（源码 `activate()`：翻转开关） */
+  toggleLever(x        , y        )       {
+    const part = partAt(this.bp, x, y);
+    if (!part || part.kind !== 'dbg.lever') throw new Error(`(${x},${y}) 不是拉杆`);
+    this.rt[idx(this.bp, x, y)].state2 ^= 1;
+  }
+
+  /** 手动刷新一次静态电平（暂停时点拉杆/IO 之后调用，不改变门的状态） */
+  refresh()       {
+    this.settle();
+  }
+
+  /** 按一下按钮：20 tick 后自动弹起 */
+  pressButton(x        , y        )       {
+    const part = partAt(this.bp, x, y);
+    if (!part || part.kind !== 'dbg.button') throw new Error(`(${x},${y}) 不是按钮`);
+    this.rt[idx(this.bp, x, y)].pulseUntil = this.tick + 20;
+  }
+
+  /** 读取 IO 端口的对外读数 */
+  readIO(x        , y        )            {
+    const port = ioAt(this.bp, x, y);
+    if (!port) throw new Error(`(${x},${y}) 没有 IO 端口`);
+    if (port.mode === 'input') {
+      const level = port.driven;
+      let bundleMask = 0;
+      for (let c = 0; c < 16; c++) if (port.channels[c]) bundleMask |= 1 << c;
+      return { level, mask: level >= 0 ? 1 << level : 0, bundleMask };
+    }
+    const mask = this.ioOutMask[port.side];
+    const bundleMask = this.ioOutBundle[port.side];
+    if (port.type === 'bundled') {
+      return { level: (bundleMask & (1 << port.freq)) !== 0 ? 1 : 0, mask, bundleMask };
+    }
+    if (port.type === 'simple') {
+      return { level: (mask & 0x8000) !== 0 ? 15 : 0, mask, bundleMask };
+    }
+    return { level: mostSignificant(mask), mask, bundleMask };
+  }
+
+  ioPorts()                                                                                                         {
+    const out                                                                                                         = [];
+    for (let y = 0; y < this.bp.h; y++) {
+      for (let x = 0; x < this.bp.w; x++) {
+        const p = ioAt(this.bp, x, y);
+        if (p) out.push({ x, y, type: p.type, mode: p.mode, side: p.side, index: p.index, freq: p.freq });
+      }
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------ 仿真推进
+
+  reset()       {
+    this.tick = 0;
+    for (let y = 0; y < this.bp.h; y++) {
+      for (let x = 0; x < this.bp.w; x++) {
+        const part = partAt(this.bp, x, y);
+        const rt = this.rt[idx(this.bp, x, y)];
+        rt.state = 0;
+        rt.state2 = part?.kind === 'dbg.lever' ? (part.params.on ?? 0) : 0;
+        rt.schedTime = -1;
+        rt.schedOut = 0;
+        rt.prevIn = 0;
+        rt.pointer = 0;
+        rt.holding = 0;
+        rt.pulseUntil = part?.kind === 'dbg.button' && part.params.pressed ? Number.MAX_SAFE_INTEGER : 0;
+        rt.rndOut = 0;
+        rt.value = 0;
+      }
+    }
+    this.trace.length = 0;
+    this.runSetups();
+    this.settle();
+  }
+
+          gateCtx(x        , y        )          {
+    const part = partAt(this.bp, x, y)                                          ;
+    return {
+      kind: part.kind,
+      shape: part.shape,
+      rot: part.rot,
+      params: part.params,
+      tick: this.tick,
+      rng: this.rng,
+    };
+  }
+
+  /** 上电稳定：忽略延迟迭代到不动点（对应 PR #54 的 firstSetup 语义） */
+          settle()       {
+    for (let iter = 0; iter < 64; iter++) {
+      this.net.solve(this.analogDrivers(), this.bundleDrivers());
+      let changed = false;
+      for (let y = 0; y < this.bp.h; y++) {
+        for (let x = 0; x < this.bp.w; x++) {
+          const part = partAt(this.bp, x, y);
+          if (!part || conductorOf(part) || isEmitter(part.kind)) continue;
+          if (partSpec(part.kind).impl !== 'ready') continue;
+          const rt = this.rt[idx(this.bp, x, y)];
+          const logic = gateLogic(part.kind);
+          const input = this.readInputBitmap(x, y, part.rot, logic.inputMask(part.shape));
+          const desired = logic.compute(input, rt, this.gateCtx(x, y)) & logic.outputMask(part.shape);
+          if (desired !== rt.state >> 4) {
+            rt.state = ((desired & 0xf) << 4) | (input & 0xf);
+            changed = true;
+          } else {
+            rt.state = (rt.state & 0xf0) | (input & 0xf);
+          }
+          rt.prevIn = input & 0xf;
+        }
+      }
+      if (!changed) break;
+    }
+    this.net.solve(this.analogDrivers(), this.bundleDrivers());
+    this.sampleIOOutputs();
+  }
+
+  step()       {
+    const bp = this.bp;
+    const t = this.tick + 1;
+    this.tick = t;
+
+    // 1. 应用到期排期
+    for (let y = 0; y < bp.h; y++) {
+      for (let x = 0; x < bp.w; x++) {
+        const rt = this.rt[idx(bp, x, y)];
+        if (rt.schedTime >= 0 && rt.schedTime <= t) {
+          const prev = rt.state >> 4;
+          rt.state = ((rt.schedOut & 0xf) << 4) | (rt.state & 0xf);
+          rt.schedTime = -1;
+          if (prev !== rt.state >> 4) {
+            this.trace.push({ tick: t, kind: 'part-change', x, y, message: `排期生效: 输出 ${prev} -> ${rt.state >> 4}` });
+          }
+        }
+      }
+    }
+
+    // 2. 每 tick 的钩子（计时器/序列器有自己的时间基准）
+    //    必须先解算一次线网，否则钩子读到的是上一 tick 的陈旧输入
+    //    （源码里 part.update() 也是在传播之后被调的）
+    this.net.solve(this.analogDrivers(), this.bundleDrivers());
+    for (let y = 0; y < bp.h; y++) {
+      for (let x = 0; x < bp.w; x++) {
+        const part = partAt(bp, x, y);
+        if (!part || conductorOf(part) || isEmitter(part.kind)) continue;
+        if (partSpec(part.kind).impl !== 'ready') continue;
+        const logic = gateLogic(part.kind);
+        if (!logic.onTick) continue;
+        const rt = this.rt[idx(bp, x, y)];
+        const input = this.readInputBitmap(x, y, part.rot, logic.inputMask(part.shape));
+        logic.onTick(input, rt, this.gateCtx(x, y));
+      }
+    }
+
+    // 3. 固定点迭代（源码 `iter < 3`）
+    for (let iter = 0; iter < this.maxIterations; iter++) {
+      this.net.solve(this.analogDrivers(), this.bundleDrivers());
+      let changed = this.updateArrayCells(t);
+      for (let y = 0; y < bp.h; y++) {
+        for (let x = 0; x < bp.w; x++) {
+          const part = partAt(bp, x, y);
+          if (!part || conductorOf(part) || isEmitter(part.kind)) continue;
+          if (partSpec(part.kind).impl !== 'ready') continue;
+          const logic = gateLogic(part.kind);
+          const rt = this.rt[idx(bp, x, y)];
+          const input = this.readInputBitmap(x, y, part.rot, logic.inputMask(part.shape));
+          const desired = logic.compute(input, rt, this.gateCtx(x, y)) & logic.outputMask(part.shape);
+          const cur = rt.state >> 4;
+          if (desired === cur) {
+            if (rt.schedTime >= 0 && rt.schedOut !== cur) rt.schedTime = -1;
+          } else {
+            const delay = Math.max(0, logic.delay(part.shape, part.params));
+            if (delay === 0) {
+              rt.state = ((desired & 0xf) << 4) | (input & 0xf);
+              changed = true;
+              this.trace.push({ tick: t, kind: 'part-change', x, y, message: `${part.kind} 输出 ${cur} -> ${desired}（同 tick）` });
+            } else if (rt.schedTime < 0 || rt.schedOut !== desired) {
+              rt.schedTime = t + delay;
+              rt.schedOut = desired;
+              this.trace.push({ tick: t, kind: 'part-change', x, y, message: `${part.kind} 排期 输出 ${cur} -> ${desired}（+${delay} tick）` });
+            }
+          }
+          // 输入位图必须每 tick 记录（源码 setState 同时写低 4 位），
+          // 否则带延迟的门会因为 prevIn 不更新而每 tick 重复检测到上升沿。
+          rt.state = (rt.state & 0xf0) | (input & 0xf);
+        }
+      }
+      if (!changed) break;
+    }
+
+    // 4. 记录本 tick 输入位图（边沿检测用）
+    for (let y = 0; y < bp.h; y++) {
+      for (let x = 0; x < bp.w; x++) {
+        const part = partAt(bp, x, y);
+        if (!part || conductorOf(part) || isEmitter(part.kind)) continue;
+        if (partSpec(part.kind).impl !== 'ready') continue;
+        const rt = this.rt[idx(bp, x, y)];
+        rt.prevIn = rt.state & 0xf;
+      }
+    }
+
+    // 5. 采样 IO 输出
+    this.net.solve(this.analogDrivers(), this.bundleDrivers());
+    this.sampleIOOutputs();
+  }
+
+  /**
+   * 阵列单元：state bit0 = 通道 0（内部 0x5）是否有信号；bit1 = !bit0（源码 scheduledTick）。
+   * Buffer Cell 在 bit0 为真时把通道 1（内部 0xa）驱动到 255；Invert Cell 在 bit0 为假时驱动；
+   * Null Cell 两个通道都不驱动（纯正交穿过）。
+   */
+          updateArrayCells(t        )          {
+    let changed = false;
+    for (let y = 0; y < this.bp.h; y++) {
+      for (let x = 0; x < this.bp.w; x++) {
+        const part = partAt(this.bp, x, y);
+        if (!part || !isArrayCellKind(part.kind)) continue;
+        const cell = idx(this.bp, x, y);
+        const rt = this.rt[cell];
+        // Null Cell 是**纯直通**：两条通道各自把相对的两条边连起来，自己什么都不驱动
+        // （所以交叉处放它，两条线各走各的通道，互不干扰，且同 tick 生效）。
+        if (part.kind === 'gate.null_cell') {
+          if (rt.state !== 0) {
+            rt.state = 0;
+            changed = true;
+          }
+          continue;
+        }
+        const a = this.net.analogOfNode(this.net.groupNode(cell, 0));
+        const bit0 = a > 0 ? 1 : 0;
+        const bit1 = bit0 ? 0 : 1;
+        const nextState = (bit1 << 4) | bit0;
+        if (nextState !== rt.state) {
+          rt.state = nextState;
+          changed = true;
+          this.trace.push({ tick: t, kind: 'part-change', x, y, message: `${part.kind} 通道0=${bit0} 通道1=${bit1}` });
+        }
+        rt.prevIn = bit0;
+      }
+    }
+    return changed;
+  }
+
+  run(ticks        )       {
+    for (let i = 0; i < ticks; i++) this.step();
+  }
+
+  snapshot()                 {
+    const gateState = new Uint8Array(this.rt.length);
+    for (let i = 0; i < this.rt.length; i++) gateState[i] = this.rt[i].state & 0xff;
+    return {
+      tick: this.tick,
+      analog: this.net.analog.slice(),
+      bundle: this.net.bundle.slice(),
+      gateState,
+    };
+  }
+
+  // ------------------------------------------------------------ 查询（CLI / 测试）
+
+  gateOutputMask(x        , y        )         {
+    return (this.rt[idx(this.bp, x, y)].state >> 4) & 0xf;
+  }
+
+  gateOutputOn(x        , y        , internal     )         {
+    return (this.gateOutputMask(x, y) & (1 << internal)) !== 0 ? MAX_SIGNAL : 0;
+  }
+
+  gateState(x        , y        )         {
+    return this.rt[idx(this.bp, x, y)].state & 0xff;
+  }
+
+  /** 调试元件（火把/拉杆/按钮）当前是否在输出 */
+  emitterOn(x        , y        )          {
+    const part = partAt(this.bp, x, y);
+    if (!part || !isEmitter(part.kind)) return false;
+    return this.emitterActive(idx(this.bp, x, y), part.kind);
+  }
+
+  /** 线缆在 (x,y) 第 0 条通道上的强度（普通线缆就是它的强度） */
+  wireStrength(x        , y        )         {
+    const cell = idx(this.bp, x, y);
+    return this.net.analogOfNode(this.net.nodeAt(cell, 0));
+  }
+
+  /** 阵列单元的通道强度：group 0 = 源码 signal1（内部 0x5），1 = signal2（0xa） */
+  arrayChannelStrength(x        , y        , group        )         {
+    const cell = idx(this.bp, x, y);
+    return this.net.analogOfNode(this.net.groupNode(cell, group));
+  }
+
+  bundleStrength(x        , y        , channel        )         {
+    const cell = idx(this.bp, x, y);
+    return this.net.bundleOfNode(this.net.nodeAt(cell, 0), channel);
+  }
+
+  componentOf(x        , y        )         {
+    const cell = idx(this.bp, x, y);
+    return this.net.componentOfNode(this.net.nodeAt(cell, 0));
+  }
+
+  describe(x        , y        )         {
+    const cell = idx(this.bp, x, y);
+    const part = partAt(this.bp, x, y);
+    const port = ioAt(this.bp, x, y);
+    if (port) {
+      const r = this.readIO(x, y);
+      return `IO(${port.type}/${port.mode}/边${port.side}/freq=${port.freq}) level=${r.level} mask=0x${r.mask.toString(16)} bundle=0x${r.bundleMask.toString(16)}`;
+    }
+    if (!part) return '空';
+    if (conductorOf(part)) {
+      if (isArrayCellKind(part.kind)) {
+        const s0 = this.net.analogOfNode(this.net.groupNode(cell, 0));
+        const s1 = this.net.analogOfNode(this.net.groupNode(cell, 1));
+        return `${part.kind} 通道0=${s0}(${vanillaLevel(s0)}) 通道1=${s1}(${vanillaLevel(s1)})`;
+      }
+      if (this.net.isBundleCell(cell)) {
+        return `线缆 bundle=0x${this.net.bundleMaskOfNode(this.net.nodeAt(cell, 0)).toString(16)}`;
+      }
+      const s = this.net.analogOfNode(this.net.nodeAt(cell, 0));
+      return `线缆 signal=${s} level=${vanillaLevel(s)}`;
+    }
+    if (isEmitter(part.kind)) {
+      return `${part.kind} ${this.emitterActive(cell, part.kind) ? 'ON(255)' : 'OFF'}`;
+    }
+    return `${part.kind} rot=${part.rot} shape=${part.shape} state=0x${this.rt[cell].state.toString(16).padStart(2, '0')} 输出位图=0x${this.gateOutputMask(x, y).toString(16)}`;
+  }
+
+  // ------------------------------------------------------------ 内部
+
+          emitterActive(cell        , kind        )          {
+    if (kind === 'dbg.torch') return true;
+    if (kind === 'dbg.lever') return this.rt[cell].state2 !== 0;
+    return this.tick < this.rt[cell].pulseUntil;
+  }
+
+          readInputBitmap(x        , y        , rot     , mask        )         {
+    let input = 0;
+    for (let r = 0       ; r < 4; r = (r + 1)       ) {
+      if ((mask & (1 << r)) === 0) continue;
+      const a = absoluteDir(r, rot);
+      const node = this.nodeFacing(x, y, a);
+      if (node >= 0 && this.net.analogOfNode(node) > 0) input |= 1 << r;
+    }
+    return input;
+  }
+
+  /** 从 (x,y) 朝绝对方向 a 看出去的邻居线缆结点 */
+          nodeFacing(x        , y        , a     )         {
+    const [dx, dy] = DIR_VEC[a];
+    const nx = x + dx;
+    const ny = y + dy;
+    if (!inBounds(this.bp, nx, ny)) return -1;
+    return this.net.nodeAt(idx(this.bp, nx, ny), opposite(a));
+  }
+
+          analogDrivers()                 {
+    const bp = this.bp;
+    const out                 = [];
+    for (let y = 0; y < bp.h; y++) {
+      for (let x = 0; x < bp.w; x++) {
+        const cell = idx(bp, x, y);
+        const part = partAt(bp, x, y);
+        if (part) {
+          if (isArrayCellKind(part.kind)) {
+            // Buffer / Invert Cell 驱动通道 1
+            const rt = this.rt[cell];
+            const bit0 = rt.state & 0x1;
+            const powerUp =
+              part.kind === 'gate.buffer_cell' ? bit0 === 1 : part.kind === 'gate.invert_cell' ? bit0 === 0 : false;
+            if (powerUp) {
+              const node = this.net.groupNode(cell, 1);
+              if (node >= 0) out.push({ node, signal: MAX_SIGNAL });
+            }
+            continue;
+          }
+          if (conductorOf(part)) continue;
+          if (isEmitter(part.kind)) {
+            if (!this.emitterActive(cell, part.kind)) continue;
+            for (let r = 0       ; r < 4; r = (r + 1)       ) {
+              const node = this.nodeFacing(x, y, r);
+              if (node >= 0 && this.net.isAnalogNode(node)) out.push({ node, signal: MAX_SIGNAL });
+            }
+            continue;
+          }
+          if (partSpec(part.kind).impl !== 'ready') continue;
+          const logic = gateLogic(part.kind);
+          const outMask = logic.outputMask(part.shape);
+          const state = this.rt[cell].state;
+          for (let r = 0       ; r < 4; r = (r + 1)       ) {
+            if ((outMask & (1 << r)) === 0) continue;
+            if ((state & (0x10 << r)) === 0) continue;
+            const a = absoluteDir(r, part.rot);
+            const node = this.nodeFacing(x, y, a);
+            if (node >= 0 && this.net.isAnalogNode(node)) out.push({ node, signal: MAX_SIGNAL });
+          }
+          continue;
+        }
+        const port = ioAt(bp, x, y);
+        if (!port || port.mode !== 'input') continue;
+        const [ix, iy] = ioInnerNeighbor(bp, x, y);
+        if (!inBounds(bp, ix, iy)) continue;
+        const node = this.net.nodeAt(idx(bp, ix, iy), port.side);
+        if (node < 0 || !this.net.isAnalogNode(node)) continue;
+        if (port.type === 'simple') {
+          if (port.driven > 0) out.push({ node, signal: MAX_SIGNAL });
+        } else if (port.type === 'analog') {
+          if (port.driven === port.freq && port.freq > 0) out.push({ node, signal: port.freq * 17 });
+        }
+      }
+    }
+    return out;
+  }
+
+          bundleDrivers()                 {
+    const bp = this.bp;
+    const out                 = [];
+    for (let y = 0; y < bp.h; y++) {
+      for (let x = 0; x < bp.w; x++) {
+        const port = ioAt(bp, x, y);
+        if (!port || port.mode !== 'input' || port.type !== 'bundled') continue;
+        if (!port.channels[port.freq]) continue;
+        const [ix, iy] = ioInnerNeighbor(bp, x, y);
+        if (!inBounds(bp, ix, iy)) continue;
+        const node = this.net.nodeAt(idx(bp, ix, iy), port.side);
+        if (this.net.isBundleNode(node)) out.push({ node, channel: port.freq, signal: MAX_SIGNAL });
+      }
+    }
+    return out;
+  }
+
+          sampleIOOutputs()       {
+    const bp = this.bp;
+    this.ioOutMask.fill(0);
+    this.ioOutBundle.fill(0);
+    for (let y = 0; y < bp.h; y++) {
+      for (let x = 0; x < bp.w; x++) {
+        const port = ioAt(bp, x, y);
+        if (!port || port.mode !== 'output') continue;
+        const [ix, iy] = ioInnerNeighbor(bp, x, y);
+        if (!inBounds(bp, ix, iy)) continue;
+        const node = this.net.nodeAt(idx(bp, ix, iy), port.side);
+        if (port.type === 'bundled') {
+          if (this.net.bundleOfNode(node, port.freq) > 0) this.ioOutBundle[port.side] |= 1 << port.freq;
+          continue;
+        }
+        if (!this.net.isAnalogNode(node)) continue;
+        const signal = this.net.analogOfNode(node);
+        if (port.type === 'simple') {
+          this.ioOutMask[port.side] |= signal > 0 ? 0x8000 : 0x1;
+        } else {
+          const level = vanillaLevel(signal);
+          if (level >= port.freq) this.ioOutMask[port.side] |= 1 << port.freq;
+        }
+      }
+    }
+  }
+
+  sideOutputMask(side     )         {
+    return this.ioOutMask[side];
+  }
+
+  sideOutputBundle(side     )         {
+    return this.ioOutBundle[side];
+  }
+
+  channelCount()         {
+    return CHANNELS;
+  }
+}
+
+
+//# sourceURL=engine/engine.js
+  exports.Engine = Engine;
+});
+
+__define("engine/gates.js", function (exports, require) {
+/**
+ * 元件行为注册表 —— 输入/输出边掩码与延迟**逐条来自源码**
+ * （`fabrication/gatepartrs.scala`、`gatepartcomb.scala`、`gatepartseq.scala`、`gatepartarray.scala`）。
+ *
+ * 核心状态表示（源码 `RedstoneGateICPart` 原注释：
+ *   "Mapped inputs and outputs of the gate. OOOO IIII High nybble is output. Low nybble is input"）：
+ *     state 的低 4 位 = 输入位图，高 4 位 = 输出位图。
+ *
+ * 掩码位：`1 << r`，r 为**内部边**（0 上 / 1 右 / 2 下 / 3 左）；
+ * 绝对边 = (r + rot) % 4。
+ *
+ * 组合门延迟为 **0 tick**（同 tick 内解算）；只有 Repeater / Pulse Former /
+ * Randomizer / Dec Randomizer / Counter 等会真正排期。
+ */
+
+                                             
+
+                              
+                                  
+                
+                                
+                 
+                             
+                    
+                   
+                   
+                                          
+                 
+                        
+                  
+                                              
+                     
+                                         
+                   
+                   
+                 
+               
+                
+ 
+
+function makeRuntime()              {
+  return {
+    state: 0,
+    state2: 0,
+    schedTime: -1,
+    schedOut: 0,
+    prevIn: 0,
+    pointer: 0,
+    pulseUntil: 0,
+    lastTick: -1,
+    rndOut: 0,
+    value: 0,
+  };
+}
+
+                          
+               
+                
+           
+                                 
+               
+                    
+ 
+
+                            
+                            
+                                   
+                                    
+                                  
+                                                               
+                         
+                                                                
+                                     
+                                                              
+                                 
+                                              
+ 
+
+const popcount = (m        )         => {
+  let n = 0;
+  let v = m & 0xf;
+  while (v) {
+    n += v & 1;
+    v >>= 1;
+  }
+  return n;
+};
+
+/**
+ * 沿 Z 轴翻转掩码（源码 `parttraits.scala` 逐字）：
+ *   `def flipMaskZ(mask: Int) = mask & 5 | mask << 2 & 8 | mask >> 2 & 2`
+ * 即**保留上下（bit0/bit2）、交换左右（bit1↔bit3）**。
+ */
+const flipMaskZ = (m        )         => ((m & 0x5) | ((m << 2) & 0x8) | ((m >> 2) & 0x2)) & 0xf;
+
+/** 4 位循环左移（源码 `shiftMask(mask, r) = (mask << r | mask >> (4-r)) & 0xf`） */
+const rotateLeft4 = (m        )         => (((m << 1) | (m >>> 3)) & 0xf);
+
+const clampInt = (v        , lo        , hi        )         => Math.max(lo, Math.min(hi, Math.floor(v)));
+
+/**
+ * 边沿检测的「上一次输入」必须用 `state` 的低 4 位（源码 `val oldInput = gate.state & 0xf`），
+ * 不能用引擎里每 tick 才更新一次的字段 —— 否则在 tick 内的固定点迭代中会被重复当成上升沿。
+ * 引擎在评估每个门之后立刻把当前输入写回低 4 位，因此第二次迭代起 `high` 必为 0（幂等）。
+ */
+const oldInputOf = (rt             , shape        )         =>
+  shape === 1 ? flipMaskZ(rt.state & 0xf) : rt.state & 0xf;
+
+/** 尚未实现的元件：掩码/延迟仍按源码声明，但 compute 会抛出，避免静默算错 */
+function pendingMasks(
+  inputMask                                      ,
+  outputMask                                      ,
+  delay                                                                       = 0,
+)            {
+  const im = typeof inputMask === 'function' ? inputMask : () => inputMask;
+  const om = typeof outputMask === 'function' ? outputMask : () => outputMask;
+  const dl = typeof delay === 'function' ? delay : () => delay;
+  return {
+    impl: 'pending',
+    inputMask: im,
+    outputMask: om,
+    delay: dl,
+    compute: () => {
+      throw new Error('该元件的行为尚未实现（掩码与延迟已按源码声明）');
+    },
+  };
+}
+
+/** 通用组合门模板：多输入门（OR/NOR/AND/NAND）——输入边 = ~shape << 1 & 0xe */
+function multiInputGate(kind                               )            {
+  const inputMask = (shape        )         => (~shape << 1) & 0xe;
+  return {
+    impl: 'ready',
+    inputMask,
+    outputMask: () => 0x1,
+    delay: () => 0,
+    compute(input, _rt, ctx) {
+      const mask = inputMask(ctx.shape);
+      const active = input & mask;
+      const allHigh = mask !== 0 && (active & mask) === mask;
+      const anyHigh = active !== 0;
+      switch (kind) {
+        case 'or':
+          return anyHigh ? 1 : 0;
+        case 'nor':
+          return anyHigh ? 0 : 1;
+        case 'and':
+          return allHigh ? 1 : 0;
+        case 'nand':
+          return allHigh ? 0 : 1;
+      }
+    },
+  };
+}
+
+/** NOT / Buffer / Randomizer 的共享掩码公式（输出可落在 0/1/3 边） */
+const notLikeOutputMask = (shape        )         =>
+  ~(((shape & 1) << 1) | ((shape & 2) >> 1) | ((shape & 4) << 1)) & 0xb;
+
+const REPEATER_DELAYS = [2, 4, 6, 8, 16, 32, 64, 128, 256];
+
+/** 计时器/状态单元的 interval = pointer_max + 2（最小 4 tick） */
+const timerInterval = (params                        , def = 38)         =>
+  Math.max(4, (params.pointer_max ?? def) + 2);
+
+const GATE_LOGIC                            = {
+  // ---------------------------------------------------------------- 基础逻辑门
+  'gate.or': multiInputGate('or'),
+  'gate.nor': multiInputGate('nor'),
+  'gate.and': multiInputGate('and'),
+  'gate.nand': multiInputGate('nand'),
+  'gate.xor': {
+    impl: 'ready',
+    inputMask: () => 0xa, // r=1 与 r=3
+    outputMask: () => 0x1,
+    delay: () => 0,
+    compute: (input) => (popcount(input & 0xa) === 1 ? 1 : 0),
+  },
+  'gate.xnor': {
+    impl: 'ready',
+    inputMask: () => 0xa,
+    outputMask: () => 0x1,
+    delay: () => 0,
+    compute: (input) => (popcount(input & 0xa) === 1 ? 0 : 1),
+  },
+  'gate.not': {
+    impl: 'ready',
+    inputMask: () => 0x4, // r=2（背面）
+    outputMask: notLikeOutputMask,
+    delay: () => 0,
+    compute: (input, _rt, ctx) => ((input & 0x4) !== 0 ? 0 : notLikeOutputMask(ctx.shape)),
+  },
+  'gate.buffer': {
+    impl: 'ready',
+    inputMask: () => 0x4,
+    outputMask: (shape) => ~(((shape & 1) << 1) | ((shape & 2) << 2)) & 0xb,
+    delay: () => 0,
+    compute: (input, _rt, ctx) =>
+      (input & 0x4) !== 0 ? (~(((ctx.shape & 1) << 1) | ((ctx.shape & 2) << 2)) & 0xb) : 0,
+  },
+  'gate.multiplexer': {
+    impl: 'ready',
+    inputMask: () => 0xe,
+    outputMask: () => 0x1,
+    delay: () => 0,
+    // 选择位 = bit2；bit2 高 → 转发 bit1，否则转发 bit3
+    compute: (input) => {
+      if (input & 0x4) return input & 0x2 ? 1 : 0;
+      return input & 0x8 ? 1 : 0;
+    },
+  },
+
+  // ---------------------------------------------------------------- 计时
+  'gate.repeater': {
+    impl: 'ready',
+    inputMask: () => 0x4,
+    outputMask: () => 0x1,
+    delay: (_shape, params) => REPEATER_DELAYS[Math.max(0, Math.min(8, params.setting ?? 0))],
+    compute: (input) => (input & 0x4 ? 1 : 0),
+  },
+  'gate.pulse_former': {
+    impl: 'ready',
+    inputMask: () => 0x4,
+    outputMask: () => 0x1,
+    delay: () => 0,
+    // 上升沿立即输出；输入落下后再保持 2 tick 才落（源码 `gate.scheduleTick(2)`）
+    compute: (input, rt, ctx) => {
+      const high = (input & 0x4) !== 0;
+      if (high) {
+        rt.pulseUntil = Math.max(rt.pulseUntil, ctx.tick + 2);
+        return 1;
+      }
+      return rt.pulseUntil > ctx.tick ? 1 : 0;
+    },
+  },
+  'gate.timer': {
+    impl: 'ready',
+    inputMask: () => 0xe,
+    outputMask: () => 0xb,
+    delay: () => 0,
+    compute: (_input, rt) => (rt.pulseUntil > 0 ? 0xb : 0),
+    onTick(input, rt, ctx) {
+      const interval = timerInterval(ctx.params);
+      if (rt.pointer <= 0) rt.pointer = interval;
+      if (input & 0xe) {
+        // 输入端通电：停表并重置指针（源码 resetPointer）。
+        // 注意：源码只清 pointer_start，已经排期的 2 tick 脉宽仍会正常结束。
+        rt.pointer = interval;
+        return;
+      }
+      if (rt.pulseUntil > 0 && ctx.tick >= rt.pulseUntil) rt.pulseUntil = 0;
+      rt.pointer -= 1;
+      if (rt.pointer <= 0) {
+        rt.pulseUntil = ctx.tick + 2; // 输出脉宽 2 tick
+        rt.pointer = interval;
+      }
+    },
+  },
+  'gate.sequencer': {
+    impl: 'ready',
+    inputMask: () => 0x0, // 源码里 Sequencer 没有输入
+    outputMask: () => 0xf,
+    delay: () => 0,
+    // 输出完全由 onTick 按世界时间写入
+    compute: (_input, rt) => rt.state >> 4,
+    onTick: (_input, rt, ctx) => {
+      const pointerMax = Math.max(4, ctx.params.pointer_max ?? 40);
+      let out = 1 << Math.floor((ctx.tick % (pointerMax * 4)) / pointerMax);
+      if (ctx.shape === 1) out = flipMaskZ(out);
+      rt.state = ((out & 0xf) << 4) | (rt.state & 0xf);
+    },
+  },
+
+  // ---------------------------------------------------------------- 锁存器
+  'gate.sr_latch': {
+    impl: 'ready',
+    inputMask: () => 0xa, // 内部边 r=1 / r=3
+    outputMask: (shape) => ((shape >> 1) === 0 ? 0xf : 0x5),
+    delay: () => 0,
+    // 源码 setup：setState2(2); setState(0x30)
+    setup: (rt) => {
+      rt.state2 = 0x2;
+      rt.state = 0x30;
+    },
+    compute: (input, rt, ctx) => {
+      const rev = (ctx.shape & 1) !== 0;
+      let newInput = input & 0xa;
+      let stateInput = rt.state2;
+      if (rev) {
+        newInput = flipMaskZ(newInput);
+        stateInput = flipMaskZ(stateInput);
+      }
+      // onChange：第一个到达的输入生效（stateInput 记录当前激活的输入边）
+      if (stateInput !== 0xa && newInput !== 0 && newInput !== stateInput) {
+        stateInput = newInput;
+        rt.state2 = rev ? flipMaskZ(stateInput) : stateInput;
+      }
+      // calcOutput：两个输入端同时为高 → 进入 disabled，不传输任何信号
+      if (stateInput === 0xa) {
+        if (newInput === 0xa) return 0;
+        stateInput = newInput === 0 ? (ctx.rng() < 0.5 ? 0x2 : 0x8) : newInput;
+        rt.state2 = rev ? flipMaskZ(stateInput) : stateInput;
+      }
+      // 输出边 = 输入边循环左移一位；样式 0 同时保留原输入边
+      let output = rotateLeft4(stateInput);
+      if ((ctx.shape & 2) === 0) output |= stateInput;
+      if (rev) output = flipMaskZ(output);
+      return output & 0xf;
+    },
+  },
+  'gate.toggle_latch': {
+    impl: 'ready',
+    inputMask: () => 0xa,
+    outputMask: () => 0x5,
+    delay: () => 0,
+    // 源码 setup：setState(0x10) ⇒ 初始输出在内部边 0
+    setup: (rt) => {
+      rt.state = 0x10;
+      rt.state2 = 0;
+    },
+    compute: (input, rt) => {
+      const newInput = input & 0xa;
+      const high = newInput & ~(rt.state & 0xf);
+      if (high === 0x2 || high === 0x8) rt.state2 ^= 1; // toggle()
+      return rt.state2 === 0 ? 0x1 : 0x4;
+    },
+  },
+  'gate.transparent_latch': {
+    impl: 'ready',
+    inputMask: (shape) => (shape === 0 ? 0xc : 0x6),
+    outputMask: (shape) => (shape === 0 ? 0x3 : 0x9),
+    delay: () => 0,
+    /**
+     * 源码 `TransparentLatch.calcOutput` 逐字：
+     *   if ((input & 4) == 0) gate.state >> 4   // 控制端 bit2 低 ⇒ 保持上次输出（输出 nibble 自身即记忆）
+     *   else if ((input & 0xa) == 0) 0          // 透明且数据低 ⇒ 全灭
+     *   else 0xf                                // 透明且数据高 ⇒ 全部输出端亮
+     * 控制端在两种 shape 下都恒为内部边 2；数据端 shape0 = 边 3、shape1 = 边 1。
+     */
+    compute: (input, rt) => {
+      if ((input & 0x4) === 0) return rt.state >> 4;
+      if ((input & 0xa) === 0) return 0;
+      return 0xf;
+    },
+  },
+
+  // ---------------------------------------------------------------- 其它
+  'gate.counter': {
+    impl: 'ready',
+    inputMask: () => 0xa, // 内部边 1（+incr）/ 3（−decr）
+    outputMask: () => 0x5, // 内部边 0（满）/ 2（零）
+    delay: () => 2, // 源码 scheduleTick(2)
+    compute: (input, rt, ctx) => {
+      const max = clampInt(ctx.params.max ?? 10, 1, 32767);
+      const incr = clampInt(ctx.params.incr ?? 1, 1, max);
+      const decr = clampInt(ctx.params.decr ?? 1, 1, max);
+      let newInput = input & 0xa;
+      if (ctx.shape === 1) newInput = flipMaskZ(newInput);
+      const high = newInput & ~oldInputOf(rt, ctx.shape);
+      if ((high & 0x2) !== 0) rt.value = clampInt(rt.value + incr, 0, max);
+      if ((high & 0x8) !== 0) rt.value = clampInt(rt.value - decr, 0, max);
+      if (rt.value >= max) return 0x1;
+      if (rt.value <= 0) return 0x4;
+      return 0;
+    },
+  },
+  'gate.state_cell': {
+    impl: 'ready',
+    inputMask: (shape) => (shape === 1 ? flipMaskZ(6) : 6), // 内部边 1 / 2
+    outputMask: (shape) => (shape === 1 ? flipMaskZ(9) : 9), // 内部边 0（结束脉冲）/ 3（保持）
+    delay: () => 0,
+    /**
+     * 源码把「触发 + 按住判定」写在 `onChange` 里（输入一变就同步生效），
+     * 因此这里也放在 compute（在固定点里、同 tick 生效），并用 lastTick 保证每个 tick 只数一次：
+     *  - 内部边 2 有信号且未武装 → 武装（幂等）
+     *  - 武装期间内部边 1/2 任一通电 → 按住，计时不算
+     *  - 保持输出在内部边 3；结束时在内部边 0 给 2 tick 脉冲
+     * 保持宽度 = interval + (触发脉冲宽度 − 1)，其中 interval = pointer_max + 2
+     */
+    compute: (input, rt, ctx) => {
+      const interval = timerInterval(ctx.params);
+      if ((input & 0x4) !== 0 && rt.state2 === 0) {
+        rt.state2 = 1;
+        rt.pointer = interval;
+        rt.lastTick = ctx.tick;
+      }
+      if (rt.state2 !== 0 && rt.lastTick !== ctx.tick) {
+        rt.lastTick = ctx.tick;
+        if ((input & 0x6) !== 0) {
+          rt.pointer = interval; // 输入端仍通电：按住（resetPointer）
+        } else {
+          rt.pointer -= 1;
+          if (rt.pointer <= 0) {
+            rt.state2 = 0;
+            rt.pulseUntil = ctx.tick + 2; // 结束脉冲宽 2 tick
+            rt.pointer = interval;
+          }
+        }
+      }
+      if (rt.pulseUntil > ctx.tick) return ctx.shape === 1 ? flipMaskZ(0x1) : 0x1;
+      const output = rt.state2 !== 0 ? 0x8 : 0;
+      return ctx.shape === 1 ? flipMaskZ(output) : output;
+    },
+  },
+  'gate.synchronizer': {
+    impl: 'ready',
+    inputMask: () => 0xe,
+    outputMask: () => 0x1,
+    delay: () => 0,
+    // state2：bit0 = 右侧曾为高，bit1 = 左侧曾为高，bit2 = 正在输出脉冲
+    compute: (input, rt, ctx) => {
+      const newInput = input & 0xe;
+      const oldInput = rt.state & 0xf;
+      if (newInput !== oldInput) {
+        if ((newInput & 0x4) !== 0) {
+          rt.state2 = 0; // 锁定端通电：立即重置两个输入状态
+          rt.pulseUntil = 0;
+        } else {
+          const high = newInput & ~oldInput;
+          if ((high & 0x2) !== 0) rt.state2 |= 1;
+          if ((high & 0x8) !== 0) rt.state2 |= 2;
+        }
+      }
+      const right = (rt.state2 & 1) !== 0;
+      const left = (rt.state2 & 2) !== 0;
+      if ((rt.state2 & 4) === 0 && right && left) {
+        rt.state2 |= 4;
+        rt.pulseUntil = ctx.tick + 2;
+      } else if ((rt.state2 & 4) !== 0 && ctx.tick >= rt.pulseUntil) {
+        rt.state2 = 0;
+        rt.pulseUntil = 0;
+        return 0;
+      }
+      return (rt.state2 & 4) !== 0 ? 0x1 : 0;
+    },
+  },
+
+  // ---------------------------------------------------------------- 随机
+  'gate.randomizer': {
+    impl: 'ready',
+    inputMask: () => 0x4,
+    outputMask: notLikeOutputMask,
+    delay: () => 2,
+    /**
+     * 源码 `Randomizer.calcOutput` 逐字：输入为低 → 保持上次输出；
+     * 输入为高 → 每个输出端独立 50/50 重抽。配合被覆盖的 `onChange` 里
+     * `if ((gate.state & 4) != 0) gate.scheduleTick(2)`，通电期间是**每 2 tick 重抽一次**。
+     * 这里只在「没有排期」时抽一次，抽完由引擎排期 2 tick，节奏与源码一致。
+     */
+    compute: (input, rt, ctx) => {
+      const mask = notLikeOutputMask(ctx.shape);
+      if ((input & 0x4) === 0) return rt.state >> 4;
+      if (rt.schedTime < 0) {
+        let out = 0;
+        for (let r = 0; r < 4; r++) if (mask & (1 << r)) out |= ctx.rng() < 0.5 ? 1 << r : 0;
+        rt.rndOut = out & mask;
+      }
+      return rt.rndOut & mask;
+    },
+  },
+  'gate.dec_randomizer': {
+    impl: 'ready',
+    inputMask: () => 0x4,
+    outputMask: (shape) => (shape === 0 ? 0xb : 0x9),
+    delay: () => 2,
+    /**
+     * 源码 `DecRandomizer.calcOutput` 逐字：
+     *   输入为低 → 若当前输出 nibble 为 0 则**自愈成 1**（bit0 常亮），否则保持；
+     *   输入为高 → 在输出端集合上 one-hot 均匀抽一个（shape0 三选一、shape1 二选一），每 2 tick 重抽。
+     */
+    compute: (input, rt, ctx) => {
+      const mask = ctx.shape === 0 ? 0xb : 0x9;
+      if ((input & 0x4) === 0) {
+        const cur = rt.state >> 4;
+        return cur === 0 ? 1 : cur;
+      }
+      if (rt.schedTime < 0) {
+        const sides           = [];
+        for (let r = 0; r < 4; r++) if (mask & (1 << r)) sides.push(1 << r);
+        rt.rndOut = sides[Math.floor(ctx.rng() * sides.length)] ?? 1;
+      }
+      return rt.rndOut & mask;
+    },
+  },
+
+  // ---------------------------------------------------------------- 阵列单元
+  // 行为在 engine.ts 里按「两条独立通道」实现（见 updateArrayCells），
+  // 这里只声明掩码，保证端口表与源码一致。
+  'gate.null_cell': pendingMasks(0xf, 0xf),
+  'gate.invert_cell': pendingMasks(0xf, 0xf),
+  'gate.buffer_cell': pendingMasks(0xf, 0xf),
+};
+
+function gateLogic(kind        )            {
+  const g = GATE_LOGIC[kind];
+  if (!g) throw new Error(`元件 ${kind} 没有行为定义`);
+  return g;
+}
+
+function hasBehavior(kind        )          {
+  const g = GATE_LOGIC[kind];
+  return !!g && g.impl === 'ready';
+}
+
+/** 阵列单元的直行传播掩码（源码 `propogationMask(r) = if (r%2==0) 0x5 else 0xa`） */
+function arrayPropagationMask(r        )         {
+  return r % 2 === 0 ? 0x5 : 0xa;
+}
+
+/** 调试元件（火把/拉杆/按钮）：驱动全部 4 个边 */
+function isEmitter(kind        )          {
+  return kind === 'dbg.torch' || kind === 'dbg.lever' || kind === 'dbg.button';
+}
+
+
+//# sourceURL=engine/gates.js
+  exports.makeRuntime = makeRuntime;
+  exports.gateLogic = gateLogic;
+  exports.hasBehavior = hasBehavior;
+  exports.arrayPropagationMask = arrayPropagationMask;
+  exports.isEmitter = isEmitter;
+  exports.GATE_LOGIC = GATE_LOGIC;
+});
+
+__define("engine/nets.js", function (exports, require) {
+/**
+ * 线缆网络求解（按「通道结点」建模）。
+ *
+ * 依据源码：
+ *  - **导线瞬时**：`ICPropagator` 在同一次调用内跑到不动点；每格只降 1 点强度（§3.3）。
+ *  - 普通线缆是一个结点（四条边全连通）；**阵列单元内部有两条互相独立的通道**：
+ *    组 0 = 源码 `signal1`（内部边 0/2），组 1 = `signal2`（内部边 1/3），
+ *    两组不互通，从而实现「两条线正交穿过而不相连」。
+ *  - analog 域：强度 = max(来源 − 距离)，0..255。
+ *  - bundle 域：16 个颜色通道各自 0..255，每通道每格 −1。
+ *  - 绝缘线 ↔ 集束线缆按颜色耦合（两个域跑 2 轮收敛）。
+ */
+
+                                                        
+const { DIR_VEC, opposite } = require('model/types.js');
+const { conductorOf, sideGroups, wiresConnect } = require('model/connectivity.js');
+const { partAt } = require('model/blueprint.js');
+const { decayed } = require('engine/signal.js');
+
+const DOMAIN_NONE = 0;
+const DOMAIN_ANALOG = 1;
+const DOMAIN_BUNDLE = 2;
+
+const CHANNELS = 16;
+
+                               
+               
+                 
+ 
+
+                               
+               
+                  
+                 
+ 
+
+/** 简易最大堆 */
+class MaxHeap {
+          keys           = [];
+          vals           = [];
+
+  get size()         {
+    return this.keys.length;
+  }
+
+  push(val        , key        )       {
+    this.keys.push(key);
+    this.vals.push(val);
+    let i = this.keys.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.keys[p] >= this.keys[i]) break;
+      this.swap(i, p);
+      i = p;
+    }
+  }
+
+  pop()                                      {
+    const n = this.keys.length;
+    if (n === 0) return null;
+    const val = this.vals[0];
+    const key = this.keys[0];
+    const lastKey = this.keys.pop()          ;
+    const lastVal = this.vals.pop()          ;
+    if (n > 1) {
+      this.keys[0] = lastKey;
+      this.vals[0] = lastVal;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < this.keys.length && this.keys[l] > this.keys[m]) m = l;
+        if (r < this.keys.length && this.keys[r] > this.keys[m]) m = r;
+        if (m === i) break;
+        this.swap(i, m);
+        i = m;
+      }
+    }
+    return { val, key };
+  }
+
+          swap(a        , b        )       {
+    const k = this.keys[a];
+    this.keys[a] = this.keys[b];
+    this.keys[b] = k;
+    const v = this.vals[a];
+    this.vals[a] = this.vals[b];
+    this.vals[b] = v;
+  }
+}
+
+class NetWorld {
+           bp           ;
+           size        ;
+  /** 每格导体域：0 非导体 / 1 analog / 2 bundle */
+           domain            ;
+  /** 每格绝缘颜色（−1 无绝缘） */
+           colour           ;
+  /** 每格的通道组数（0 = 非导体，普通线缆 1，阵列单元 2） */
+           groupCount            ;
+  /** cell*4 + side → 该边所属的结点 id（−1 = 该边不可导） */
+           nodeOfSide            ;
+  /** 每个结点所属的格 */
+           nodeOwner            ;
+  /** 每个结点所属连通分量（−1 = 该结点不属于此域） */
+           analogComp            ;
+           bundleComp            ;
+           analog              ;
+           bundle              ;
+           nodeCount        ;
+
+                   nodeOfGroup            ;
+                   adjacency            ;
+                   coupling                                                                    = [];
+
+  constructor(bp           ) {
+    this.bp = bp;
+    this.size = bp.w * bp.h;
+    this.domain = new Uint8Array(this.size);
+    this.colour = new Int8Array(this.size).fill(-1);
+    this.groupCount = new Int32Array(this.size);
+    this.nodeOfSide = new Int32Array(this.size * 4).fill(-1);
+
+    const totalGroups = new Int32Array(this.size);
+    let nodeCount = 0;
+    for (let cell = 0; cell < this.size; cell++) {
+      const x = cell % bp.w;
+      const y = (cell - x) / bp.w;
+      const part = partAt(bp, x, y);
+      const info = conductorOf(part);
+      if (!info || !part) continue;
+      this.domain[cell] = info.domain === 'analog' ? DOMAIN_ANALOG : DOMAIN_BUNDLE;
+      this.colour[cell] = info.colour;
+      const groups = sideGroups(part);
+      this.groupCount[cell] = groups.length;
+      totalGroups[cell] = groups.length;
+      nodeCount += groups.length;
+    }
+    this.nodeCount = nodeCount;
+
+    const nodeOfGroup = new Int32Array(this.size * 2).fill(-1);
+    const nodeOwner = new Int32Array(nodeCount).fill(-1);
+    let next = 0;
+    for (let cell = 0; cell < this.size; cell++) {
+      const n = totalGroups[cell];
+      if (n === 0) continue;
+      const x = cell % bp.w;
+      const y = (cell - x) / bp.w;
+      const part = partAt(bp, x, y)                                          ;
+      const groups = sideGroups(part);
+      for (let g = 0; g < n; g++) {
+        const id = next++;
+        nodeOfGroup[cell * 2 + g] = id;
+        nodeOwner[id] = cell;
+        for (const side of groups[g]) this.nodeOfSide[cell * 4 + side] = id;
+      }
+    }
+    this.nodeOfGroup = nodeOfGroup;
+    this.nodeOwner = nodeOwner;
+    this.analogComp = new Int32Array(nodeCount).fill(-1);
+    this.bundleComp = new Int32Array(nodeCount).fill(-1);
+    this.analog = new Float64Array(nodeCount);
+    this.bundle = new Float64Array(nodeCount * CHANNELS);
+    this.adjacency = Array.from({ length: nodeCount }, () => []);
+
+    // ---- 建立邻接（含跨域耦合）
+    for (let cell = 0; cell < this.size; cell++) {
+      if (totalGroups[cell] === 0) continue;
+      const x = cell % bp.w;
+      const y = (cell - x) / bp.w;
+      const partA = partAt(bp, x, y);
+      for (const d of [0, 1, 2, 3]         ) {
+        const a = this.nodeOfSide[cell * 4 + d];
+        if (a < 0) continue;
+        const [dx, dy] = DIR_VEC[d];
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= bp.w || ny >= bp.h) continue;
+        const nb = ny * bp.w + nx;
+        if (totalGroups[nb] === 0) continue;
+        const b = this.nodeOfSide[nb * 4 + opposite(d)];
+        if (b < 0) continue;
+        const partB = partAt(bp, nx, ny);
+        if (!wiresConnect(partA, partB)) continue;
+        if (this.domain[cell] !== this.domain[nb]) {
+          // 跨域耦合：绝缘线 ↔ 集束线缆（颜色对应）
+          if (this.domain[cell] === DOMAIN_ANALOG && this.colour[cell] >= 0 && this.domain[nb] === DOMAIN_BUNDLE) {
+            this.coupling.push({ analogNode: a, bundleNode: b, colour: this.colour[cell] });
+          }
+          continue;
+        }
+        if (a !== b) {
+          this.adjacency[a].push(b);
+          this.adjacency[b].push(a);
+        }
+      }
+    }
+
+    // ---- 连通分量
+    const buildComps = (domain        , comp            )       => {
+      const parent = new Int32Array(nodeCount).fill(-1);
+      for (let node = 0; node < nodeCount; node++) {
+        const cell = nodeOwner[node];
+        if (cell >= 0 && this.domain[cell] === domain) parent[node] = node;
+      }
+      const find = (a        )         => {
+        let r = a;
+        while (parent[r] !== r) r = parent[r];
+        while (parent[a] !== r) {
+          const nx = parent[a];
+          parent[a] = r;
+          a = nx;
+        }
+        return r;
+      };
+      for (let node = 0; node < nodeCount; node++) {
+        if (parent[node] < 0) continue;
+        for (const nb of this.adjacency[node]) {
+          if (parent[nb] < 0) continue;
+          const ra = find(node);
+          const rb = find(nb);
+          if (ra !== rb) parent[rb] = ra;
+        }
+      }
+      const map = new Map                ();
+      for (let node = 0; node < nodeCount; node++) {
+        if (parent[node] < 0) continue;
+        const r = find(node);
+        let id = map.get(r);
+        if (id === undefined) {
+          id = map.size;
+          map.set(r, id);
+        }
+        comp[node] = id;
+      }
+    };
+    buildComps(DOMAIN_ANALOG, this.analogComp);
+    buildComps(DOMAIN_BUNDLE, this.bundleComp);
+  }
+
+  // ---------------------------------------------------------------- 查询
+
+  isConductor(cell        )          {
+    return this.groupCount[cell] > 0;
+  }
+
+  isAnalogCell(cell        )          {
+    return this.domain[cell] === DOMAIN_ANALOG;
+  }
+
+  isBundleCell(cell        )          {
+    return this.domain[cell] === DOMAIN_BUNDLE;
+  }
+
+  nodeAt(cell        , side     )         {
+    if (cell < 0 || cell >= this.size) return -1;
+    return this.nodeOfSide[cell * 4 + side];
+  }
+
+  /** 阵列单元的通道结点：groupIdx 0 = 内部 0x5（signal1），1 = 内部 0xa（signal2） */
+  groupNode(cell        , groupIdx        )         {
+    return this.nodeOfGroup[cell * 2 + groupIdx];
+  }
+
+  isAnalogNode(node        )          {
+    return node >= 0 && this.analogComp[node] >= 0;
+  }
+
+  isBundleNode(node        )          {
+    return node >= 0 && this.bundleComp[node] >= 0;
+  }
+
+  analogOfNode(node        )         {
+    return node >= 0 ? this.analog[node] : 0;
+  }
+
+  bundleOfNode(node        , channel        )         {
+    return node >= 0 ? this.bundle[node * CHANNELS + channel] : 0;
+  }
+
+  bundleMaskOfNode(node        )         {
+    if (node < 0) return 0;
+    let mask = 0;
+    for (let c = 0; c < CHANNELS; c++) if (this.bundle[node * CHANNELS + c] > 0) mask |= 1 << c;
+    return mask;
+  }
+
+  componentOfNode(node        )         {
+    if (node < 0) return -1;
+    return this.analogComp[node] >= 0 ? this.analogComp[node] : this.bundleComp[node];
+  }
+
+  // ---------------------------------------------------------------- 求解
+
+  solve(analogDrivers                , bundleDrivers                )       {
+    this.analog.fill(0);
+    this.bundle.fill(0);
+    for (let round = 0; round < 2; round++) {
+      const aSources = analogDrivers.slice();
+      for (const cp of this.coupling) {
+        const s = this.bundle[cp.bundleNode * CHANNELS + cp.colour] - 1;
+        if (s > 0) aSources.push({ node: cp.analogNode, signal: s });
+      }
+      this.propagateAnalog(aSources);
+
+      const bSources = bundleDrivers.slice();
+      for (const cp of this.coupling) {
+        const s = this.analog[cp.analogNode] - 1;
+        if (s > 0) bSources.push({ node: cp.bundleNode, channel: cp.colour, signal: s });
+      }
+      this.propagateBundle(bSources);
+    }
+  }
+
+          propagateAnalog(sources                )       {
+    this.analog.fill(0);
+    const heap = new MaxHeap();
+    for (const s of sources) {
+      if (s.node < 0 || s.node >= this.nodeCount) continue;
+      if (this.analogComp[s.node] < 0) continue;
+      if (s.signal <= 0) continue;
+      if (s.signal > this.analog[s.node]) {
+        this.analog[s.node] = s.signal;
+        heap.push(s.node, s.signal);
+      }
+    }
+    while (heap.size > 0) {
+      const top = heap.pop()                                ;
+      const node = top.val;
+      if (top.key < this.analog[node] - 1e-9) continue;
+      const comp = this.analogComp[node];
+      for (const nb of this.adjacency[node]) {
+        if (this.analogComp[nb] !== comp) continue;
+        const v = decayed(top.key, 1);
+        if (v > this.analog[nb] + 1e-9) {
+          this.analog[nb] = v;
+          heap.push(nb, v);
+        }
+      }
+    }
+  }
+
+          propagateBundle(sources                )       {
+    this.bundle.fill(0);
+    for (let channel = 0; channel < CHANNELS; channel++) {
+      const heap = new MaxHeap();
+      for (const s of sources) {
+        if (s.channel !== channel) continue;
+        if (s.node < 0 || s.node >= this.nodeCount) continue;
+        if (this.bundleComp[s.node] < 0) continue;
+        if (s.signal <= 0) continue;
+        const idx = s.node * CHANNELS + channel;
+        if (s.signal > this.bundle[idx]) {
+          this.bundle[idx] = s.signal;
+          heap.push(s.node, s.signal);
+        }
+      }
+      while (heap.size > 0) {
+        const top = heap.pop()                                ;
+        const node = top.val;
+        const idx = node * CHANNELS + channel;
+        if (top.key < this.bundle[idx] - 1e-9) continue;
+        const comp = this.bundleComp[node];
+        for (const nb of this.adjacency[node]) {
+          if (this.bundleComp[nb] !== comp) continue;
+          const v = decayed(top.key, 1);
+          const nidx = nb * CHANNELS + channel;
+          if (v > this.bundle[nidx] + 1e-9) {
+            this.bundle[nidx] = v;
+            heap.push(nb, v);
+          }
+        }
+      }
+    }
+  }
+}
+
+
+//# sourceURL=engine/nets.js
+  exports.NetWorld = NetWorld;
+  exports.DOMAIN_NONE = DOMAIN_NONE;
+  exports.DOMAIN_ANALOG = DOMAIN_ANALOG;
+  exports.DOMAIN_BUNDLE = DOMAIN_BUNDLE;
+  exports.CHANNELS = CHANNELS;
+});
+
+__define("engine/signal.js", function (exports, require) {
+/**
+ * 信号强度模型 —— 依据 GTNewHorizons/ProjectRed 源码（master @ b29f404）确认：
+ *
+ *  - 线缆内部强度 `signal` 是 **0..255 的整数**（`signal: Byte`），不是浮点、没有 resistance。
+ *  - 沿线每经过一格：`signal = max(相邻来源) - 1`（`redwires.scala`：`getRedwireSignal(r) - 1`）。
+ *    ⇒ 「每 17 格减 1 点强度」是**误解**：17 是「0..255 ↔ 原版 0..15」的换算因子，不是衰减率。
+ *  - 注入（原版方块 → 线）：`signal = 原版强度 * 17`。
+ *  - 输出（线 → 原版）：`level = (signal + 16) / 17`（整数除法）。
+ *
+ *  电平 L ↔ 强度区间 [17L−16, 17L]：L=15 → 239..255，L=1 → 1..17，L=0 → 仅 0。
+ *  校验：(255+16)/17 = 15 ✔  (238+16)/17 = 14 ✔  (17+16)/17 = 1 ✔
+ *
+ *  集束线缆是另一个量纲：16 个颜色通道，每通道也是 0..255 强度（`Array[Byte](16)`），
+ *  通道索引 c 与「颜色」一一对应（c=15 黑 … c=0 白，即原版染料索引）。
+ */
+
+const MAX_SIGNAL = 255;
+const LEVELS = 16;
+const SIGNAL_PER_LEVEL = 17;
+
+/** 线缆强度 → 原版强度等级（0..15）：`(signal + 16) / 17` */
+function vanillaLevel(signal        )         {
+  if (!Number.isFinite(signal) || signal <= 0) return 0;
+  return Math.floor((Math.min(signal, MAX_SIGNAL) + 16) / SIGNAL_PER_LEVEL);
+}
+
+/** 原版强度等级 → 线缆强度：`level * 17` */
+function signalFromLevel(level        )         {
+  return Math.max(0, Math.min(15, Math.floor(level))) * SIGNAL_PER_LEVEL;
+}
+
+function clampSignal(signal        )         {
+  if (!Number.isFinite(signal) || signal <= 0) return 0;
+  return Math.min(MAX_SIGNAL, Math.floor(signal));
+}
+
+/** 衰减 blocks 格后的强度 */
+function decayed(signal        , blocks        )         {
+  return clampSignal(signal - blocks);
+}
+
+/** 电平 → one-hot 掩码位（IC 每边 16 位的语义） */
+function levelToMask(level        )         {
+  return 1 << Math.max(0, Math.min(15, Math.floor(level)));
+}
+
+/**
+ * 掩码 → 最高置位下标（= 电平）。
+ * 对应源码 `MathLib.mostSignificant(mask) = 31 - Integer.numberOfLeadingZeros(mask)`。
+ * 掩码为 0 时源码会得到 -1，但实际调用点总会至少置 1 位（Simple IO 的 OFF 用 bit0），
+ * 这里保守返回 0。
+ */
+function mostSignificant(mask        )         {
+  return mask === 0 ? 0 : 31 - Math.clz32(mask);
+}
+
+/**
+ * 总线转换器：原版强度等级 → 集束线缆颜色频道。
+ * 维基对照表「15=黑色 … 0=白色」与原版染料索引（0=白 … 15=黑）逐位相等，
+ * 因此映射是恒等：频道 = 电平。
+ */
+function channelFromLevel(level        )         {
+  return Math.max(0, Math.min(15, Math.floor(level)));
+}
+
+function levelFromChannel(channel        )         {
+  return Math.max(0, Math.min(15, Math.floor(channel)));
+}
+
+/** 门电路判「高」：源码里既用 `> 0`（IC 内部）也用 `!= 0`，等价于非零 */
+function isHigh(signal        )          {
+  return signal > 0;
+}
+
+
+//# sourceURL=engine/signal.js
+  exports.vanillaLevel = vanillaLevel;
+  exports.signalFromLevel = signalFromLevel;
+  exports.clampSignal = clampSignal;
+  exports.decayed = decayed;
+  exports.levelToMask = levelToMask;
+  exports.mostSignificant = mostSignificant;
+  exports.channelFromLevel = channelFromLevel;
+  exports.levelFromChannel = levelFromChannel;
+  exports.isHigh = isHigh;
+  exports.MAX_SIGNAL = MAX_SIGNAL;
+  exports.LEVELS = LEVELS;
+  exports.SIGNAL_PER_LEVEL = SIGNAL_PER_LEVEL;
+});
+
+__define("model/blueprint.js", function (exports, require) {
+/**
+ * 蓝图模型：尺寸、IO 环、单元格与 JSON 序列化。
+ *
+ * 尺寸规则（源码 `NewICNode`：`maxBoardSize = Size(4,4)`、`ic.size = selected * 16`）：
+ *   每维 ∈ {16, 32, 48, 64}，两维独立，共 16 种组合。
+ *
+ * 结构规则（源码 `op.scala`）：
+ *   `isOnBorder = x==0 || y==0 || x==w-1 || y==h-1` ⇒ 外圈 1 格是 IO 环；
+ *   `OpGate.canPlace = !isOnBorder` ⇒ 普通门/导线只能放内部（16×16 板内区 14×14）；
+ *   `OpIOGate.canPlace = isOnBorder && !isOnEdge` ⇒ IO 端口只能在环上且四角不行。
+ */
+
+                                                                                
+const { DIR_VEC, absoluteDir } = require('model/types.js');
+const { partSpec } = require('model/catalog.js');
+
+const GRID_SIZES = [16, 32, 48, 64]         ;
+
+function isGridSize(n        )          {
+  return (GRID_SIZES                     ).includes(n);
+}
+
+const MIN_GRID = 16;
+const MAX_GRID = 64;
+
+function idx(bp           , x        , y        )         {
+  return y * bp.w + x;
+}
+
+function inBounds(bp           , x        , y        )          {
+  return x >= 0 && y >= 0 && x < bp.w && y < bp.h;
+}
+
+/** 是否位于最外一圈 IO 环 */
+function isRing(bp           , x        , y        )          {
+  return x === 0 || y === 0 || x === bp.w - 1 || y === bp.h - 1;
+}
+
+/** 是否位于四角（环上但不能放 IO） */
+function isCorner(bp           , x        , y        )          {
+  return (x === 0 || x === bp.w - 1) && (y === 0 || y === bp.h - 1);
+}
+
+function cellAt(bp           , x        , y        )              {
+  if (!inBounds(bp, x, y)) return null;
+  return bp.cells[idx(bp, x, y)] ?? null;
+}
+
+function partAt(bp           , x        , y        )                 {
+  return cellAt(bp, x, y)?.part ?? null;
+}
+
+function ioAt(bp           , x        , y        )                {
+  return cellAt(bp, x, y)?.io ?? null;
+}
+
+/** 单元格 (x,y) 在方向 d 上的邻居坐标 */
+function neighbor(x        , y        , d     )                   {
+  const [dx, dy] = DIR_VEC[d];
+  return [x + dx, y + dy];
+}
+
+/** 某条边上的格子顺序（上/下自左向右，左/右自上向下） */
+function edgeCells(bp           , side     )                          {
+  const out                          = [];
+  if (side === 0) for (let x = 0; x < bp.w; x++) out.push([x, 0]);
+  else if (side === 2) for (let x = 0; x < bp.w; x++) out.push([x, bp.h - 1]);
+  else if (side === 3) for (let y = 0; y < bp.h; y++) out.push([0, y]);
+  else for (let y = 0; y < bp.h; y++) out.push([bp.w - 1, y]);
+  return out;
+}
+
+/** 端口朝内的邻居格（IO 端口与内部电路的接触点） */
+function ioInnerNeighbor(bp           , x        , y        )                   {
+  if (y === 0) return [x, 1];
+  if (y === bp.h - 1) return [x, bp.h - 2];
+  if (x === 0) return [1, y];
+  if (x === bp.w - 1) return [bp.w - 2, y];
+  throw new Error(`(${x},${y}) 不在 IO 环上`);
+}
+
+/** 端口所在的边（= 端口的 rotation，源码 `OpIOGate.findRot`） */
+function sideOfRing(bp           , x        , y        )      {
+  if (y === 0) return 0;
+  if (y === bp.h - 1) return 2;
+  if (x === 0) return 3;
+  if (x === bp.w - 1) return 1;
+  throw new Error(`(${x},${y}) 不在 IO 环上`);
+}
+
+                                 
+                             
+                  
+             
+             
+ 
+
+function createBlueprint(name        , w        , h        )            {
+  if (!isGridSize(w) || !isGridSize(h)) {
+    throw new Error(`蓝图尺寸必须每维取自 ${GRID_SIZES.join('/')}，收到 ${w}×${h}`);
+  }
+  const cells         = new Array(w * h);
+  for (let i = 0; i < cells.length; i++) cells[i] = { part: null, io: null };
+  return { name, w, h, cells, meta: {} };
+}
+
+/** 便捷构造：把元件放到 (x,y) */
+function placePart(
+  bp           ,
+  x        ,
+  y        ,
+  kind        ,
+  rot      = 0,
+  shape = 0,
+  params                         = {},
+)          {
+  const s = partSpec(kind);
+  const merged                         = {};
+  for (const p of s.params) merged[p.key] = p.def;
+  Object.assign(merged, params);
+  const c = cellAt(bp, x, y);
+  if (!c) throw new Error(`坐标越界: (${x},${y})`);
+  const part          = { kind, rot, shape, params: merged };
+  c.part = part;
+  return part;
+}
+
+/** 便捷构造：在环上放 IO 端口（自动推导 side 与 index） */
+function placeIO(
+  bp           ,
+  x        ,
+  y        ,
+  type        ,
+  mode                ,
+  freq = 0,
+)         {
+  if (!isRing(bp, x, y)) throw new Error(`(${x},${y}) 不在 IO 环上`);
+  if (isCorner(bp, x, y)) throw new Error(`(${x},${y}) 是角落，不能放 IO`);
+  const side = sideOfRing(bp, x, y);
+  const cells = edgeCells(bp, side);
+  const index = cells.findIndex(([cx, cy]) => cx === x && cy === y);
+  // 与游戏一致：新放下的 IO 端口默认不通信号（电平 0；集束端口所有频道关）
+  const port         = { type, mode, side, index, freq, driven: 0, channels: new Array(16).fill(0) };
+  const c = cellAt(bp, x, y);
+  if (!c) throw new Error(`坐标越界: (${x},${y})`);
+  c.io = port;
+  return port;
+}
+
+/** 校验蓝图的结构合法性 */
+function validateBlueprint(bp           )                   {
+  const issues                   = [];
+  if (!isGridSize(bp.w) || !isGridSize(bp.h)) {
+    issues.push({ level: 'error', message: `尺寸 ${bp.w}×${bp.h} 非法，每维必须是 16/32/48/64` });
+  }
+  if (bp.cells.length !== bp.w * bp.h) {
+    issues.push({ level: 'error', message: `cells 长度 ${bp.cells.length} 与 ${bp.w}×${bp.h} 不符` });
+    return issues;
+  }
+
+  const perSide = new Map                                                                              ();
+  const pending = new Set        ();
+
+  for (let y = 0; y < bp.h; y++) {
+    for (let x = 0; x < bp.w; x++) {
+      const c = bp.cells[idx(bp, x, y)];
+      const ring = isRing(bp, x, y);
+
+      if (c.io) {
+        if (!ring) issues.push({ level: 'error', message: 'IO 端口只能放在最外一圈', x, y });
+        if (isCorner(bp, x, y)) issues.push({ level: 'error', message: '四角不能放 IO 端口', x, y });
+        const slot = perSide.get(c.io.side) ?? { type: null, simple: 0, ports: 0, freqs: [] };
+        if (slot.type !== null && slot.type !== c.io.type) {
+          issues.push({ level: 'error', message: `同一条边只能声明一种 IO 类型（${slot.type} 与 ${c.io.type} 冲突）`, x, y });
+        }
+        slot.type = c.io.type;
+        slot.ports++;
+        if (c.io.type === 'simple') slot.simple++;
+        if (c.io.type !== 'simple') {
+          if (slot.freqs.includes(c.io.freq)) {
+            issues.push({ level: 'error', message: `同一条边上 ${c.io.type} IO 的 freq=${c.io.freq} 重复`, x, y });
+          }
+          slot.freqs.push(c.io.freq);
+        }
+        perSide.set(c.io.side, slot);
+      }
+
+      if (c.part) {
+        if (ring) issues.push({ level: 'error', message: 'IO 环上只能放 IO 端口，不能放元件', x, y });
+        let s;
+        try {
+          s = partSpec(c.part.kind);
+        } catch {
+          issues.push({ level: 'error', message: `未知元件 ${c.part.kind}`, x, y });
+          continue;
+        }
+        if (s.impl === 'pending') pending.add(c.part.kind);
+      }
+    }
+  }
+
+  for (const [side, slot] of perSide) {
+    const name = ['上', '右', '下', '左'][side];
+    if (slot.type === 'simple' && slot.simple > 1) {
+      issues.push({ level: 'error', message: `${name}边放了 ${slot.simple} 个 Simple IO；一条边只能声明一个 Simple IO` });
+    }
+    const maxPorts = side === 0 || side === 2 ? bp.w - 2 : bp.h - 2;
+    if (slot.ports > maxPorts) {
+      issues.push({ level: 'error', message: `${name}边端口数 ${slot.ports} 超过可用长度 ${maxPorts}（四角不可用）` });
+    }
+  }
+
+  if (pending.size > 0) {
+    issues.push({ level: 'error', message: `以下元件行为尚未实现: ${[...pending].join(', ')}` });
+  }
+
+  return issues;
+}
+
+/** 检查每个 IO 端口是否有内部接触（内侧相邻格必须是线缆） */
+function findDanglingIO(bp           )                          {
+  const out                          = [];
+  for (let y = 0; y < bp.h; y++) {
+    for (let x = 0; x < bp.w; x++) {
+      if (!ioAt(bp, x, y)) continue;
+      const [ix, iy] = ioInnerNeighbor(bp, x, y);
+      const inner = partAt(bp, ix, iy);
+      if (!inner || partSpec(inner.kind).category !== 'wire') out.push([x, y]);
+    }
+  }
+  return out;
+}
+
+/** 元件的某个内部边对应的绝对方向 */
+function partAbsoluteDir(part         , internal     )      {
+  return absoluteDir(internal, part.rot);
+}
+
+// ------------------------------------------------------------------ 序列化
+
+const BLUEPRINT_FORMAT = 'pr-ic-sim/blueprint@2';
+
+function serializeBlueprint(bp           )         {
+  return JSON.stringify(
+    {
+      format: BLUEPRINT_FORMAT,
+      name: bp.name,
+      w: bp.w,
+      h: bp.h,
+      meta: bp.meta,
+      cells: bp.cells.map((c) => {
+        const o                          = {};
+        if (c.part) o.part = { kind: c.part.kind, rot: c.part.rot, shape: c.part.shape, params: c.part.params };
+        if (c.io) {
+          o.io = {
+            type: c.io.type,
+            mode: c.io.mode,
+            side: c.io.side,
+            index: c.io.index,
+            freq: c.io.freq,
+            driven: c.io.driven,
+            channels: c.io.channels,
+          };
+        }
+        return o;
+      }),
+      // 预留：后续接入游戏 .icbp / 分享串格式时，在此登记源格式与版本
+      sourceFormat: null,
+    },
+    null,
+    2,
+  );
+}
+
+/** 预留接口：从游戏蓝图（.icbp / 分享串 / NBT）导入，尚未实现 */
+function importGameBlueprint(_payload        )            {
+  throw new Error('尚未实现：游戏 .icbp / 分享串导入。见 README 的「蓝图互通」章节');
+}
+
+function deserializeBlueprint(text        )            {
+  const raw = JSON.parse(text)                           ;
+  if (raw.format !== BLUEPRINT_FORMAT) {
+    throw new Error(`不支持的蓝图格式: ${String(raw.format)}（当前只支持 ${BLUEPRINT_FORMAT}）`);
+  }
+  const w = raw.w          ;
+  const h = raw.h          ;
+  if (!isGridSize(w) || !isGridSize(h)) throw new Error(`蓝图尺寸非法: ${w}×${h}`);
+  const src = raw.cells                                  ;
+  if (!Array.isArray(src) || src.length !== w * h) throw new Error('cells 长度与尺寸不符');
+  const cells         = src.map((o) => {
+    const part = (o.part                       ) ?? null;
+    const io = (o.io                      ) ?? null;
+    return {
+      part: part ? { kind: part.kind, rot: part.rot, shape: part.shape ?? 0, params: { ...part.params } } : null,
+      io: io
+        ? {
+            type: io.type,
+            mode: io.mode,
+            side: io.side,
+            index: io.index ?? 0,
+            freq: io.freq ?? 0,
+            driven: io.driven ?? -1,
+            channels: io.channels ? [...io.channels] : new Array(16).fill(0),
+          }
+        : null,
+    };
+  });
+  return { name: String(raw.name ?? 'untitled'), w, h, cells, meta: (raw.meta                           ) ?? {} };
+}
+
+
+//# sourceURL=model/blueprint.js
+  exports.isGridSize = isGridSize;
+  exports.idx = idx;
+  exports.inBounds = inBounds;
+  exports.isRing = isRing;
+  exports.isCorner = isCorner;
+  exports.cellAt = cellAt;
+  exports.partAt = partAt;
+  exports.ioAt = ioAt;
+  exports.neighbor = neighbor;
+  exports.edgeCells = edgeCells;
+  exports.ioInnerNeighbor = ioInnerNeighbor;
+  exports.sideOfRing = sideOfRing;
+  exports.createBlueprint = createBlueprint;
+  exports.placePart = placePart;
+  exports.placeIO = placeIO;
+  exports.validateBlueprint = validateBlueprint;
+  exports.findDanglingIO = findDanglingIO;
+  exports.partAbsoluteDir = partAbsoluteDir;
+  exports.serializeBlueprint = serializeBlueprint;
+  exports.importGameBlueprint = importGameBlueprint;
+  exports.deserializeBlueprint = deserializeBlueprint;
+  exports.GRID_SIZES = GRID_SIZES;
+  exports.MIN_GRID = MIN_GRID;
+  exports.MAX_GRID = MAX_GRID;
+  exports.BLUEPRINT_FORMAT = BLUEPRINT_FORMAT;
+});
+
+__define("model/catalog.js", function (exports, require) {
+/**
+ * 元件目录 —— IC 工作台里**真正可以放置**的元件（依据源码 `CircuitPartDefs` /
+ * `ICGateDefinition` / `CircuitOpDefs`，GTNewHorizons/ProjectRed master @ b29f404）。
+ *
+ * 重要更正（与中文 wiki / mcmod 教程不同）：
+ *  - IC 内**没有**原版红石火把 / 中继器 / 比较器；用的是模组自有的 Torch / Lever / Button
+ *    与自家的 Repeater 门。
+ *  - IC 内**没有** AND Cell / Data Cell / Bus Converter / Bus Transceiver / Bus Randomizer
+ *    —— 那些只是「世界门」。`Data Cell` 在本 mod 中根本不存在。
+ *  - 阵列单元在 IC 内可用的是 **Null Cell / Invert Cell / Buffer Cell**（没有 AND Cell）。
+ *
+ * 端口掩码、组合逻辑与延迟在 `engine/gates.ts`（`GATE_LOGIC`）；
+ * 阵列单元的两通道行为在 `engine/engine.ts`（`updateArrayCells`）。
+ */
+
+                                               
+
+                            
+              
+                
+              
+              
+              
+ 
+
+                           
+               
+             
+             
+                         
+                                
+                   
+                                       
+                
+                      
+                            
+                    
+                
+ 
+
+function spec(s                                                                                    )           {
+  return {
+    delay: 0,
+    params: [],
+    impl: 'ready',
+    verified: true,
+    ...s,
+  }            ;
+}
+
+const COLOUR_PARAM            = { key: 'colour', label: '颜色索引 0..15', min: -1, max: 15, def: -1 };
+
+const PARTS                                     = Object.freeze({
+  // ---------------------------------------------------------------- 线缆（CircuitPartDefs 3/4/5）
+  'wire.alloy': spec({
+    kind: 'wire.alloy',
+    zh: '红色合金丝',
+    en: 'Alloy Wire',
+    category: 'wire',
+    sourceId: 3,
+    note: '强度 0..255 整数，每格 −1；无绝缘（可桥接不同颜色的绝缘线）',
+  }),
+  'wire.insulated': spec({
+    kind: 'wire.insulated',
+    zh: '绝缘线',
+    en: 'Insulated Wire',
+    category: 'wire',
+    sourceId: 4,
+    params: [COLOUR_PARAM],
+    note: '不同颜色的绝缘线互不连接；与集束线缆总是可连（把自己那一色接进去）',
+  }),
+  'wire.bundled': spec({
+    kind: 'wire.bundled',
+    zh: '集束线缆',
+    en: 'Bundled Cable',
+    category: 'wire',
+    sourceId: 5,
+    params: [{ ...COLOUR_PARAM, label: '线缆颜色 −1=中性 / 0..15', def: -1 }],
+    note: '16 个颜色通道各自 0..255 强度，每格每通道 −1；不能直连普通元件',
+  }),
+
+  // ---------------------------------------------------------------- Debug 组（0/1/2）
+  'dbg.torch': spec({
+    kind: 'dbg.torch',
+    zh: '红石火把（IC 内）',
+    en: 'Torch',
+    category: 'debug',
+    sourceId: 0,
+    note: '恒输出 255，无延迟、无调度',
+  }),
+  'dbg.lever': spec({
+    kind: 'dbg.lever',
+    zh: '拉杆',
+    en: 'Lever',
+    category: 'debug',
+    sourceId: 1,
+    params: [{ key: 'on', label: '初始是否打开', min: 0, max: 1, def: 0 }],
+    note: '立即翻转（无延迟）',
+  }),
+  'dbg.button': spec({
+    kind: 'dbg.button',
+    zh: '按钮',
+    en: 'Button',
+    category: 'debug',
+    sourceId: 2,
+    params: [{ key: 'pressed', label: '初始是否按下', min: 0, max: 1, def: 0 }],
+    note: '按下后 20 tick（1 s）自动弹起',
+  }),
+
+  // ---------------------------------------------------------------- 逻辑门（ICGateDefinition 3..11）
+  'gate.or': spec({ kind: 'gate.or', zh: '或门', en: 'OR Gate', category: 'logic', sourceId: 3, note: 'inputMask = ~shape << 1 & 0xe' }),
+  'gate.nor': spec({ kind: 'gate.nor', zh: '或非门', en: 'NOR Gate', category: 'logic', sourceId: 4 }),
+  'gate.not': spec({ kind: 'gate.not', zh: '非门', en: 'NOT Gate', category: 'logic', sourceId: 5, note: '输出可落在内部边 0/1/3' }),
+  'gate.and': spec({ kind: 'gate.and', zh: '与门', en: 'AND Gate', category: 'logic', sourceId: 6 }),
+  'gate.nand': spec({ kind: 'gate.nand', zh: '与非门', en: 'NAND Gate', category: 'logic', sourceId: 7 }),
+  'gate.xor': spec({ kind: 'gate.xor', zh: '异或门', en: 'XOR Gate', category: 'logic', sourceId: 8, note: 'inputMask = 0xa（内部边 1/3）' }),
+  'gate.xnor': spec({ kind: 'gate.xnor', zh: '异或非门', en: 'XNOR Gate', category: 'logic', sourceId: 9 }),
+  'gate.buffer': spec({ kind: 'gate.buffer', zh: '缓冲器', en: 'Buffer Gate', category: 'logic', sourceId: 10 }),
+  'gate.multiplexer': spec({
+    kind: 'gate.multiplexer',
+    zh: '多路复用器',
+    en: 'Multiplexer',
+    category: 'logic',
+    sourceId: 11,
+    note: 'inputMask 0xe：选择位 = 内部边 2，数据 = 内部边 1（真）/ 内部边 3（假）',
+  }),
+
+  // ---------------------------------------------------------------- 计时（12..13, 18..19）
+  'gate.pulse_former': spec({
+    kind: 'gate.pulse_former',
+    zh: '脉冲发生器',
+    en: 'Pulse Former',
+    category: 'timing',
+    sourceId: 12,
+    note: '上升沿立即输出（同 tick），输入落下后保持 2 tick 再落',
+  }),
+  'gate.repeater': spec({
+    kind: 'gate.repeater',
+    zh: '中继器',
+    en: 'Repeater',
+    category: 'timing',
+    sourceId: 13,
+    params: [{ key: 'setting', label: '档位 0..8 → 2/4/6/8/16/32/64/128/256 tick', min: 0, max: 8, def: 0 }],
+    note: '源码 delays = Array(2,4,6,8,16,32,64,128,256)，**不是** wiki 的 1..256',
+  }),
+  'gate.timer': spec({
+    kind: 'gate.timer',
+    zh: '计时器',
+    en: 'Timer',
+    category: 'timing',
+    sourceId: 18,
+    params: [{ key: 'pointer_max', label: '间隔 −2（tick），默认 38 → 40 tick', min: 2, max: 4094, def: 38 }],
+    note: '间隔 = pointer_max + 2（最小 4 tick = 0.2 s）；输出脉宽 2 tick；输入端通电暂停并重置',
+  }),
+  'gate.sequencer': spec({
+    kind: 'gate.sequencer',
+    zh: '序列发生器',
+    en: 'Sequencer',
+    category: 'timing',
+    sourceId: 19,
+    params: [{ key: 'pointer_max', label: '每步 tick（默认 40）', min: 4, max: 4094, def: 40 }],
+    note: '用世界时间：out = 1 << (worldTime % (pointer_max*4)) / pointer_max，周期 = pointer_max*4（默认 160 tick = 8 s）',
+  }),
+
+  // ---------------------------------------------------------------- 锁存器（15..17）
+  'gate.sr_latch': spec({
+    kind: 'gate.sr_latch',
+    zh: 'RS 锁存器',
+    en: 'SR Latch',
+    category: 'storage',
+    sourceId: 15,
+    params: [{ key: 'style', label: '样式 0/1', min: 0, max: 1, def: 0 }],
+    note: 'setup 为 state2=2、state=0x30；两个输入同时为高时进入 disabled（0xa），不传输',
+  }),
+  'gate.toggle_latch': spec({
+    kind: 'gate.toggle_latch',
+    zh: 'T 触发器',
+    en: 'Toggle Latch',
+    category: 'storage',
+    sourceId: 16,
+    note: 'setup 为 state=0x10（初始输出在内部边 0）；每个输入脉冲切换两侧',
+  }),
+  'gate.transparent_latch': spec({
+    kind: 'gate.transparent_latch',
+    zh: '透明锁存器',
+    en: 'Transparent Latch',
+    category: 'storage',
+    sourceId: 17,
+    note: '样式 0：输入内部边 2/3，输出内部边 0/1；哪一侧是锁定端为 [推测]',
+  }),
+
+  // ---------------------------------------------------------------- 其它（20..23）
+  'gate.counter': spec({
+    kind: 'gate.counter',
+    zh: '计数器',
+    en: 'Counter',
+    category: 'storage',
+    sourceId: 20,
+    params: [
+      { key: 'max', label: '计数上限（源码默认 10）', min: 1, max: 32767, def: 10 },
+      { key: 'incr', label: '正向步进', min: 1, max: 32767, def: 1 },
+      { key: 'decr', label: '负向步减', min: 1, max: 32767, def: 1 },
+    ],
+    note: 'inputMask 0xa / outputMask 0x5；scheduleTick(2)；满 → 内部边 0，零 → 内部边 2',
+  }),
+  'gate.state_cell': spec({
+    kind: 'gate.state_cell',
+    zh: '状态单元',
+    en: 'State Cell',
+    category: 'timing',
+    sourceId: 21,
+    params: [{ key: 'pointer_max', label: '保持时间 −2（tick），默认 38 → 40 tick', min: 2, max: 4094, def: 38 }],
+    note: 'Timer + state2；输入内部边 2 触发，内部边 3 保持，内部边 0 在结束时发 2 tick 脉冲',
+  }),
+  'gate.synchronizer': spec({
+    kind: 'gate.synchronizer',
+    zh: '同步器',
+    en: 'Synchronizer',
+    category: 'storage',
+    sourceId: 22,
+    note: 'inputMask 0xe / outputMask 0x1；两个输入都曾为高后输出 2 tick 脉冲；内部边 2 是锁定端',
+  }),
+
+  // ---------------------------------------------------------------- 随机（14, 23）
+  'gate.randomizer': spec({
+    kind: 'gate.randomizer',
+    zh: '随机信号发生器',
+    en: 'Randomizer',
+    category: 'random',
+    sourceId: 14,
+    note: '输入通电时每个输出端随机翻转一次，之后保持（getDelay = 2）',
+  }),
+  'gate.dec_randomizer': spec({
+    kind: 'gate.dec_randomizer',
+    zh: '减速随机发生器',
+    en: 'Dec Randomizer',
+    category: 'random',
+    sourceId: 23,
+    note: '输入通电时随机选中一个输出端（getDelay = 2）',
+  }),
+
+  // ---------------------------------------------------------------- 阵列单元（24..26）
+  'gate.null_cell': spec({
+    kind: 'gate.null_cell',
+    zh: '空单元',
+    en: 'Null Cell',
+    category: 'array',
+    sourceId: 24,
+    note: '两条互相独立的通道（内部 0x5 / 0xa）：两条线正交穿过而不相连；两个通道都不驱动',
+  }),
+  'gate.invert_cell': spec({
+    kind: 'gate.invert_cell',
+    zh: '转换单元',
+    en: 'Invert Cell',
+    category: 'array',
+    sourceId: 25,
+    note: '通道 0 无信号时把通道 1 驱动到 255（取反）；源码中 IC 内**可用**',
+  }),
+  'gate.buffer_cell': spec({
+    kind: 'gate.buffer_cell',
+    zh: '缓冲单元',
+    en: 'Buffer Cell',
+    category: 'array',
+    sourceId: 26,
+    note: '通道 0 有信号时把通道 1 驱动到 255（跟随）',
+  }),
+});
+
+function partSpec(kind        )           {
+  const s = PARTS[kind];
+  if (!s) throw new Error(`未知元件种类: ${kind}`);
+  return s;
+}
+
+function isWire(kind        )          {
+  return partSpec(kind).category === 'wire';
+}
+
+function allKinds()           {
+  return Object.keys(PARTS);
+}
+
+
+//# sourceURL=model/catalog.js
+  exports.partSpec = partSpec;
+  exports.isWire = isWire;
+  exports.allKinds = allKinds;
+  exports.PARTS = PARTS;
+});
+
+__define("model/connectivity.js", function (exports, require) {
+/**
+ * 连接规则 —— 依据源码 `transmission/redwires.scala`（IC 侧与世界侧逐字相同）：
+ *
+ *  - 红色合金丝：无绝缘（colour = −1），可与同色绝缘线、其它合金丝互连。
+ *  - 绝缘线：`colour` 0..15；与**同色**绝缘线互连，与集束线缆**总是**允许互连。
+ *  - 集束线缆：`colour` 0..15，−1 表示无色/中性；↔集束线缆仅当**至少一方为 −1 或同色**；
+ *    ↔绝缘线总是允许；↔普通元件（门、火把等）**一律 false**（所以必须先用绝缘线把颜色引出来）。
+ *  - 线缆自身不能直接驱动门以外的普通元件；门通过端口掩码连接线缆。
+ */
+
+                                               
+
+                                                  
+
+                                
+                          
+                                                      
+                 
+                                    
+                           
+                             
+                     
+ 
+
+/** 阵列单元：Null / Invert / Buffer Cell（源码 `ArrayGateICPart`） */
+function isArrayCellKind(kind        )          {
+  return kind === 'gate.null_cell' || kind === 'gate.invert_cell' || kind === 'gate.buffer_cell';
+}
+
+function conductorOf(part                )                       {
+  if (!part) return null;
+  switch (part.kind) {
+    case 'wire.alloy':
+      return { domain: 'analog', colour: -1, connectsToParts: true, arrayCell: false };
+    case 'wire.insulated':
+      return { domain: 'analog', colour: part.params.colour ?? 0, connectsToParts: true, arrayCell: false };
+    case 'wire.bundled':
+      return { domain: 'bundle', colour: part.params.colour ?? -1, connectsToParts: false, arrayCell: false };
+    case 'gate.null_cell':
+    case 'gate.invert_cell':
+    case 'gate.buffer_cell':
+      // 阵列单元的 redwireMask = 0xf，四条边都能与红石线互连；对集束线缆是 IICBundledEmitter
+      return { domain: 'analog', colour: -1, connectsToParts: true, arrayCell: true };
+    default:
+      return null;
+  }
+}
+
+/**
+ * 元件的「内部连通通道」分组，返回每组包含的**绝对边**。
+ *
+ *  - 普通线缆：一组，四条边全连通（导线是结点）。
+ *  - 阵列单元：两组，各自连通一对**相对的边** —— 正好是 `propogationMask(r) = if (r%2==0) 0x5 else 0xa`：
+ *    组 0（源码 `signal1` / mask 0x5）= 内部边 0 与 2（上下），组 1（`signal2` / mask 0xa）= 内部边 1 与 3（左右）。
+ *    两组互不相通，因此阵列单元能让两条线正交穿过而不相连。
+ */
+function sideGroups(part         )          {
+  if (isArrayCellKind(part.kind)) {
+    const a = (r        )      => (((r + part.rot) % 4) + 4) % 4       ;
+    return [
+      [a(0), a(2)],
+      [a(1), a(3)],
+    ];
+  }
+  return [[0, 1, 2, 3]];
+}
+
+/** 两条线缆是否互连 */
+function wiresConnect(a                , b                )          {
+  const ca = conductorOf(a);
+  const cb = conductorOf(b);
+  if (!ca || !cb) return false;
+
+  // 阵列单元可以和任意线缆互连（源码 `canConnectRedwire` + `IICBundledEmitter`）
+  if (ca.arrayCell || cb.arrayCell) return true;
+
+  // 跨域：只有「绝缘线 ↔ 集束线缆」允许（绝缘线把自己那一色接到集束线缆上）
+  if (ca.domain !== cb.domain) {
+    const analogSide = ca.domain === 'analog' ? a : b;
+    const bundleSide = ca.domain === 'bundle' ? a : b;
+    return analogSide?.kind === 'wire.insulated' && bundleSide?.kind === 'wire.bundled';
+  }
+
+  if (ca.domain === 'bundle') {
+    return ca.colour === -1 || cb.colour === -1 || ca.colour === cb.colour;
+  }
+  // analog：合金丝（−1）桥接任意颜色，同色互连
+  return ca.colour === -1 || cb.colour === -1 || ca.colour === cb.colour;
+}
+
+/** 线缆是否能与普通元件（门/火把等）相连 */
+function wireConnectsToPart(wire                )          {
+  return conductorOf(wire)?.connectsToParts ?? false;
+}
+
+
+//# sourceURL=model/connectivity.js
+  exports.isArrayCellKind = isArrayCellKind;
+  exports.conductorOf = conductorOf;
+  exports.sideGroups = sideGroups;
+  exports.wiresConnect = wiresConnect;
+  exports.wireConnectsToPart = wireConnectsToPart;
+});
+
+__define("model/types.js", function (exports, require) {
+/**
+ * 核心类型定义。
+ *
+ * 重要约束：本项目用 Node 原生类型擦除直接运行 .ts（零依赖、离线可跑），
+ * 因此源码里只能使用「可擦除语法」——禁止 enum / namespace / 构造函数参数属性 /
+ * 仅在类型层有意义的 import 必须写成 `import type`。
+ *
+ * 坐标系与朝向依据源码 `TArrayGateICPart.sideDiff` / `TICOrient`：
+ *   棋盘坐标 x→右、y→下；r = 0 上(0,−1) / 1 右(+1,0) / 2 下(0,+1) / 3 左(−1,0)
+ *   内部边 r 与绝对边 a 的换算：a = (r + rotation) % 4，r = (a + 4 − rotation) % 4
+ */
+
+/** 方向：0=上(-y) 1=右(+x) 2=下(+y) 3=左(-x) */
+                                
+
+const DIRS                 = [0, 1, 2, 3];
+
+const DIR_VEC                                                   = {
+  0: [0, -1],
+  1: [1, 0],
+  2: [0, 1],
+  3: [-1, 0],
+};
+
+const DIR_NAME                                = { 0: 'N', 1: 'E', 2: 'S', 3: 'W' };
+
+function opposite(d     )      {
+  return ((d + 2) % 4)       ;
+}
+
+function rotateCW(d     )      {
+  return ((d + 1) % 4)       ;
+}
+
+/** 内部边 → 绝对边（源码 `TICOrient.toAbsolute`） */
+function absoluteDir(internal     , rotation     )      {
+  return (((internal + rotation) % 4) + 4) % 4       ;
+}
+
+/** 绝对边 → 内部边（源码 `TICOrient.toInternal`） */
+function toInternal(absolute     , rotation     )      {
+  return (((absolute + 4 - rotation) % 4) + 4) % 4       ;
+}
+
+/** 16 种 Minecraft 染料色，索引沿用原版染料元数据顺序（= 集束线缆频道号） */
+const COLOR_NAMES = [
+  'white',
+  'orange',
+  'magenta',
+  'lightBlue',
+  'yellow',
+  'lime',
+  'pink',
+  'gray',
+  'lightGray',
+  'cyan',
+  'purple',
+  'blue',
+  'brown',
+  'green',
+  'red',
+  'black',
+]         ;
+
+                                                     
+
+const COLOR_COUNT = COLOR_NAMES.length;
+
+function colorName(index        )            {
+  return COLOR_NAMES[((index % COLOR_COUNT) + COLOR_COUNT) % COLOR_COUNT];
+}
+
+function colorIndexByName(name        )         {
+  const i = COLOR_NAMES.indexOf(name             );
+  if (i < 0) throw new Error(`未知颜色: ${name}`);
+  return i;
+}
+
+                          
+          
+           
+           
+            
+             
+           
+             
+
+/** 元件种类 id，取值来自 model/catalog.ts 的 PARTS */
+                              
+
+                          
+                 
+                                         
+           
+     
+                                                      
+                                                             
+     
+                
+                                              
+                                 
+ 
+
+                                        
+                                                     
+
+                         
+               
+               
+                                                 
+            
+                               
+                
+     
+                              
+                                        
+     
+               
+                                                       
+                 
+                                
+                     
+ 
+
+                       
+                               
+                       
+                                
+                    
+ 
+
+                            
+               
+                              
+            
+            
+                     
+                
+                                
+ 
+
+/** 引擎对外的事件记录，供 trace / 测试使用 */
+                             
+               
+                                                    
+            
+            
+                  
+ 
+
+
+//# sourceURL=model/types.js
+  exports.opposite = opposite;
+  exports.rotateCW = rotateCW;
+  exports.absoluteDir = absoluteDir;
+  exports.toInternal = toInternal;
+  exports.colorName = colorName;
+  exports.colorIndexByName = colorIndexByName;
+  exports.DIRS = DIRS;
+  exports.DIR_VEC = DIR_VEC;
+  exports.DIR_NAME = DIR_NAME;
+  exports.COLOR_NAMES = COLOR_NAMES;
+  exports.COLOR_COUNT = COLOR_COUNT;
+});
+
+__define("web/app.js", function (exports, require) {
+/**
+ * Web GUI：IC 工作台编辑器 + 仿真可视化。
+ *
+ * 交互按源码 spec §6 复刻：
+ *  - 左键按下→拖动→松开 = 使用当前工具（导线沿轴投影逐格填、门用拖动方向定朝向、橡皮擦区域擦除）
+ *  - 右键元件 = 打开元件配置面板（朝向 / shape / 参数）
+ *  - 左键点 IO 端口 = 调试（在电平 0 / 15 之间切换）
+ *  - 滚轮缩放 0.5..3.0，按住 Shift 拖动 = 平移棋盘
+ *  - 尺寸选择用 4×4 矩阵（每维 16/32/48/64）
+ */
+
+                                                                        
+const { COLOR_NAMES, DIR_VEC, absoluteDir, opposite } = require('model/types.js');
+const { createBlueprint, deserializeBlueprint, edgeCells, inBounds, ioAt, isCorner, isRing, partAt, placeIO, placePart, serializeBlueprint, sideOfRing, } = require('model/blueprint.js');
+const { PARTS, partSpec } = require('model/catalog.js');
+const { conductorOf, isArrayCellKind, wiresConnect } = require('model/connectivity.js');
+const { Engine } = require('engine/engine.js');
+const { GATE_LOGIC } = require('engine/gates.js');
+const { vanillaLevel } = require('engine/signal.js');
+
+// ---------------------------------------------------------------- 工具类型
+
+                    
+               
+               
+           
+                
+                                 
+ 
+                  
+             
+                 
+                           
+               
+ 
+                                                                       
+
+                 
+            
+            
+ 
+
+// ---------------------------------------------------------------- 状态
+
+const CELL = 20;
+const DYE                         = {
+  white: '#e8e8e8',
+  orange: '#ff9d2e',
+  magenta: '#e05be0',
+  lightBlue: '#5bd6ff',
+  yellow: '#ffe75b',
+  lime: '#7bff5b',
+  pink: '#ff9dc8',
+  gray: '#8f8f8f',
+  lightGray: '#c8c8c8',
+  cyan: '#5be0e0',
+  purple: '#b05bff',
+  blue: '#5b6bff',
+  brown: '#8b5a2b',
+  green: '#4fd44f',
+  red: '#ff5b5b',
+  black: '#3a3a3a',
+};
+
+const state = {
+  bp: createBlueprint('untitled', 16, 16),
+  engine: null                 ,
+  tool: { kind: 'select' }        ,
+  selected: null                                   ,
+  hover: null                                   ,
+  probes: []           ,
+  rows: []              ,
+  /** 与游戏里的 IC 一样默认就在跑；暂停时改动输入也会手动刷新一次静态电平 */
+  running: true,
+  speed: 20,
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+  seed: 12345,
+  showSignals: true,
+  /** 最近一次测量到的视口尺寸（像素），toScreen/toCell 都用它，保证与绘制一致 */
+  viewW: 1,
+  viewH: 1,
+  message: '',
+  error: '',
+  drag: null            
+              
+              
+                   
+                 
+                 
+                     
+               
+               
+   ,
+};
+
+const el = (id        )              => document.getElementById(id)               ;
+const canvas = el('board')                     ;
+const ctx2d = canvas.getContext('2d')                            ;
+const boardWrap = el('boardWrap');
+
+/**
+ * 视口尺寸**只从父容器量**，绝不读 canvas.clientWidth。
+ *
+ * 原因：`draw()` 会写 `canvas.width`。如果画布的 CSS 尺寸由它自己的属性宽度决定
+ * （例如 `inset:0` 不生效、或任何让 width 变成 auto 的情形），
+ * 「读 clientWidth → 写 canvas.width → clientWidth 变大」就会变成一个逐帧指数放大的正反馈，
+ * 棋盘会被推到几百万像素之外（真机上表现为一片空白 + 状态行出现天文数字坐标）。
+ */
+function measureView()                   {
+  return [Math.max(1, boardWrap.clientWidth), Math.max(1, boardWrap.clientHeight)];
+}
+
+// ---------------------------------------------------------------- 引擎
+
+function rebuildEngine()       {
+  try {
+    state.engine = new Engine(state.bp, { seed: state.seed });
+    state.error = '';
+  } catch (err) {
+    state.engine = null;
+    state.error = (err         ).message.split('\n')[0];
+  }
+  state.rows = [];
+}
+
+function rerunFromScratch()       {
+  state.engine?.reset();
+  state.rows = [];
+}
+
+// ---------------------------------------------------------------- 工具面板
+
+const PALETTE_GROUPS                                                                        = [
+  {
+    title: '工具',
+    items: [
+      { label: '选择/调试', tool: { kind: 'select' } },
+      { label: '橡皮擦 (E)', tool: { kind: 'erase' } },
+    ],
+  },
+  {
+    title: 'Debug',
+    items: [
+      { label: '火把', tool: partTool('dbg.torch') },
+      { label: '拉杆', tool: partTool('dbg.lever') },
+      { label: '按钮', tool: partTool('dbg.button') },
+    ],
+  },
+  { title: 'Alloy Wire', items: [{ label: '红色合金丝', tool: partTool('wire.alloy') }] },
+  {
+    title: 'Insulated wires',
+    items: COLOR_NAMES.map((name, i) => ({
+      label: name,
+      tool: partTool('wire.insulated', { colour: i }),
+      colour: name,
+    }))                                                        ,
+  },
+  {
+    title: 'Bundled cables',
+    items: [
+      { label: '中性', tool: partTool('wire.bundled', { colour: -1 }) },
+      ...COLOR_NAMES.map((name, i) => ({ label: name, tool: partTool('wire.bundled', { colour: i }), colour: name })),
+    ],
+  },
+  {
+    title: 'IOs（只能放在外圈）',
+    items: [
+      { label: 'Simple 输入', tool: ioTool('simple', 'input', 0) },
+      { label: 'Simple 输出', tool: ioTool('simple', 'output', 0) },
+      { label: 'Analog 输入', tool: ioTool('analog', 'input', 7) },
+      { label: 'Analog 输出', tool: ioTool('analog', 'output', 7) },
+      { label: 'Bundled 输入', tool: ioTool('bundled', 'input', 0) },
+      { label: 'Bundled 输出', tool: ioTool('bundled', 'output', 0) },
+    ],
+  },
+  { title: 'Primitives', items: gateItems(['gate.or', 'gate.nor', 'gate.not', 'gate.and', 'gate.nand', 'gate.xor', 'gate.xnor', 'gate.buffer', 'gate.multiplexer']) },
+  { title: 'Timing and Clocks', items: gateItems(['gate.pulse_former', 'gate.repeater', 'gate.timer', 'gate.sequencer']) },
+  { title: 'Latches', items: gateItems(['gate.sr_latch', 'gate.toggle_latch', 'gate.transparent_latch']) },
+  { title: 'Cells', items: gateItems(['gate.null_cell', 'gate.invert_cell', 'gate.buffer_cell']) },
+  { title: 'Misc', items: gateItems(['gate.randomizer', 'gate.dec_randomizer', 'gate.counter', 'gate.synchronizer']) },
+];
+
+function partTool(kind        , params                         = {})           {
+  const spec = partSpec(kind);
+  const merged                         = {};
+  for (const p of spec.params) merged[p.key] = p.def;
+  Object.assign(merged, params);
+  return { kind: 'part', part: kind, rot: 0, shape: 0, params: merged };
+}
+
+function ioTool(ioType        , mode                    , freq        )         {
+  return { kind: 'io', ioType, mode, freq };
+}
+
+function gateItems(kinds          )                                       {
+  return kinds.map((k) => ({ label: partSpec(k).zh, tool: partTool(k) }));
+}
+
+function toolKey(t      )         {
+  if (t.kind === 'part') return `part:${t.part}:${JSON.stringify(t.params)}`;
+  if (t.kind === 'io') return `io:${t.ioType}:${t.mode}:${t.freq}`;
+  return t.kind;
+}
+
+function renderPalette()       {
+  const root = el('palette');
+  root.innerHTML = '';
+  for (const group of PALETTE_GROUPS) {
+    const h = document.createElement('h4');
+    h.textContent = group.title;
+    root.appendChild(h);
+    const row = document.createElement('div');
+    row.className = 'row';
+    for (const item of group.items) {
+      const btn = document.createElement('button');
+      const colour = (item                       ).colour;
+      if (colour) {
+        btn.className = 'swatch';
+        btn.style.background = DYE[colour];
+        btn.title = `${item.label}（${(item.tool            ).part}）`;
+      } else {
+        btn.textContent = item.label;
+        btn.title = item.label;
+      }
+      if (toolKey(state.tool) === toolKey(item.tool)) btn.classList.add('on');
+      btn.onclick = () => {
+        state.tool = JSON.parse(JSON.stringify(item.tool))        ;
+        renderPalette();
+        renderInspector();
+      };
+      row.appendChild(btn);
+    }
+    root.appendChild(row);
+  }
+}
+
+// ---------------------------------------------------------------- 顶部工具栏
+
+function renderToolbar()       {
+  const bar = el('toolbar');
+  bar.innerHTML = '';
+
+  const sim = document.createElement('div');
+  sim.className = 'group';
+  sim.append(
+    button(state.running ? '⏸ 暂停' : '▶ 运行', () => {
+      state.running = !state.running;
+      renderToolbar();
+    }, state.running),
+    button('⏭ 单步', () => {
+      state.engine?.step();
+      recordRow();
+      renderProbes();
+      renderStatus();
+      draw();
+    }),
+    button('↺ 重置', () => {
+      rerunFromScratch();
+      renderStatus();
+      draw();
+    }),
+  );
+  bar.appendChild(sim);
+
+  const speed = document.createElement('div');
+  speed.className = 'group';
+  speed.append(text('速度'));
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '1';
+  slider.max = '200';
+  slider.value = String(state.speed);
+  slider.style.width = '120px';
+  slider.oninput = () => {
+    state.speed = Number(slider.value);
+    label.textContent = `${state.speed} tick/s`;
+  };
+  const label = document.createElement('span');
+  label.textContent = `${state.speed} tick/s`;
+  label.style.color = 'var(--dim)';
+  speed.append(slider, label);
+  bar.appendChild(speed);
+
+  bar.appendChild(sep());
+
+  const bpGroup = document.createElement('div');
+  bpGroup.className = 'group';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = state.bp.name;
+  nameInput.style.width = '140px';
+  nameInput.onchange = () => {
+    state.bp.name = nameInput.value || 'untitled';
+  };
+  bpGroup.append(text('蓝图'), nameInput, button('新蓝图…', () => openSizeDialog()));
+  bar.appendChild(bpGroup);
+
+  const ioGroup = document.createElement('div');
+  ioGroup.className = 'group';
+  ioGroup.append(
+    button('保存 JSON', () => saveBlueprint()),
+    button('载入 JSON', () => loadBlueprint()),
+    button('清空探针', () => {
+      state.probes = [];
+      renderProbes();
+      draw();
+    }),
+  );
+  bar.appendChild(ioGroup);
+
+  bar.appendChild(sep());
+  const viewGroup = document.createElement('div');
+  viewGroup.className = 'group';
+  viewGroup.append(
+    button(`缩放 ${state.zoom.toFixed(1)}×`, () => {
+      state.zoom = state.zoom >= 3 ? 0.5 : Math.round((state.zoom + 0.5) * 10) / 10;
+      draw();
+      renderToolbar();
+    }),
+    button('居中', () => {
+      fitView();
+      draw();
+      renderToolbar();
+    }),
+  );
+  bar.appendChild(viewGroup);
+}
+
+function button(label        , onClick            , on = false)                    {
+  const b = document.createElement('button');
+  b.textContent = label;
+  if (on) b.classList.add('on');
+  b.onclick = onClick;
+  return b;
+}
+
+function text(s        )              {
+  const span = document.createElement('span');
+  span.textContent = s;
+  span.style.color = 'var(--dim)';
+  return span;
+}
+
+function sep()              {
+  const d = document.createElement('div');
+  d.className = 'sep';
+  return d;
+}
+
+// 4×4 尺寸矩阵（源码 `NewICNode.maxBoardSize = Size(4,4)`）
+function openSizeDialog()       {
+  const back = document.createElement('div');
+  back.style.cssText =
+    'position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;z-index:9';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;min-width:280px';
+  box.innerHTML = `<h4 style="margin-top:0">新建蓝图（每维 16/32/48/64）</h4>`;
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px';
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 4; col++) {
+      const w = (col + 1) * 16;
+      const h = (row + 1) * 16;
+      const b = document.createElement('button');
+      b.textContent = `${w}×${h}`;
+      b.onclick = () => {
+        state.bp = createBlueprint(state.bp.name, w, h);
+        state.probes = [];
+        state.selected = null;
+        rebuildEngine();
+        fitView();
+        back.remove();
+        renderAll();
+      };
+      grid.appendChild(b);
+    }
+  }
+  box.appendChild(grid);
+  const nameRow = document.createElement('div');
+  nameRow.style.marginTop = '10px';
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = state.bp.name;
+  nameInput.onchange = () => {
+    state.bp.name = nameInput.value || 'untitled';
+  };
+  nameRow.appendChild(nameInput);
+  box.appendChild(nameRow);
+  box.appendChild(button('取消', () => back.remove()));
+  back.appendChild(box);
+  back.onclick = (e) => {
+    if (e.target === back) back.remove();
+  };
+  document.body.appendChild(back);
+}
+
+// ---------------------------------------------------------------- 蓝图 IO
+
+function saveBlueprint()       {
+  const blob = new Blob([serializeBlueprint(state.bp)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${state.bp.name || 'blueprint'}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function loadBlueprint()       {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        state.bp = deserializeBlueprint(String(reader.result));
+        state.probes = [];
+        state.selected = null;
+        rebuildEngine();
+        fitView();
+        renderAll();
+      } catch (err) {
+        state.error = `载入失败: ${(err         ).message}`;
+        renderStatus();
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+// ---------------------------------------------------------------- 绘制
+
+function cellPx()         {
+  return CELL * state.zoom;
+}
+
+/** 把整块棋盘按视口大小缩放居中（新建/载入/点「适配视图」时调用） */
+function fitView()       {
+  const [W, H] = measureView();
+  const s = Math.min(W / (state.bp.w + 4), H / (state.bp.h + 4));
+  state.zoom = Math.max(0.5, Math.min(3, Math.round((s / CELL) * 10) / 10));
+  state.panX = 0;
+  state.panY = 0;
+  state.viewW = W;
+  state.viewH = H;
+}
+
+/** 世界坐标（棋盘格坐标，可为小数）→ 屏幕像素 */
+function toScreen(gx        , gy        )                   {
+  const s = cellPx();
+  return [state.viewW / 2 + state.panX + gx * s, state.viewH / 2 + state.panY + gy * s];
+}
+
+function toCell(px        , py        )                           {
+  const s = cellPx();
+  const gx = (px - state.viewW / 2 - state.panX) / s;
+  const gy = (py - state.viewH / 2 - state.panY) / s;
+  return { x: Math.floor(gx), y: Math.floor(gy) };
+}
+
+function heat(level        )         {
+  if (!state.showSignals || level <= 0) return '#4a5058';
+  const t = Math.min(1, level / 15);
+  const r = Math.round(90 + 165 * t);
+  const g = Math.round(70 + 60 * t);
+  const b = Math.round(60 + 40 * t);
+  return `rgb(${r},${g},${b})`;
+}
+
+function draw()       {
+  const dpr = window.devicePixelRatio || 1;
+  const [W, H] = measureView();
+  if (W <= 1 || H <= 1) return;
+  state.viewW = W;
+  state.viewH = H;
+  // 只写 canvas 的尺寸，不读回来；同时用 style 把 CSS 尺寸钉死，杜绝反馈自激
+  if (canvas.width !== Math.floor(W * dpr) || canvas.height !== Math.floor(H * dpr)) {
+    canvas.width = Math.floor(W * dpr);
+    canvas.height = Math.floor(H * dpr);
+  }
+  canvas.style.width = `${W}px`;
+  canvas.style.height = `${H}px`;
+  ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx2d.clearRect(0, 0, W, H);
+  ctx2d.fillStyle = '#101216';
+  ctx2d.fillRect(0, 0, W, H);
+
+  const bp = state.bp;
+  const s = cellPx();
+  const engine = state.engine;
+
+  // 底板
+  const [ox, oy] = toScreen(0, 0);
+  ctx2d.fillStyle = '#191c21';
+  ctx2d.fillRect(ox, oy, bp.w * s, bp.h * s);
+  ctx2d.fillStyle = '#241f18';
+  ctx2d.fillRect(ox, oy, bp.w * s, s);
+  ctx2d.fillRect(ox, oy + (bp.h - 1) * s, bp.w * s, s);
+  ctx2d.fillRect(ox, oy, s, bp.h * s);
+  ctx2d.fillRect(ox + (bp.w - 1) * s, oy, s, bp.h * s);
+
+  // 网格
+  ctx2d.lineWidth = 1;
+  for (let x = 0; x <= bp.w; x++) {
+    ctx2d.strokeStyle = x % 4 === 0 ? '#2c3138' : '#20242a';
+    ctx2d.beginPath();
+    ctx2d.moveTo(Math.round(ox + x * s) + 0.5, oy);
+    ctx2d.lineTo(Math.round(ox + x * s) + 0.5, oy + bp.h * s);
+    ctx2d.stroke();
+  }
+  for (let y = 0; y <= bp.h; y++) {
+    ctx2d.strokeStyle = y % 4 === 0 ? '#2c3138' : '#20242a';
+    ctx2d.beginPath();
+    ctx2d.moveTo(ox, Math.round(oy + y * s) + 0.5);
+    ctx2d.lineTo(ox + bp.w * s, Math.round(oy + y * s) + 0.5);
+    ctx2d.stroke();
+  }
+  ctx2d.strokeStyle = '#4a5361';
+  ctx2d.strokeRect(ox + 0.5, oy + 0.5, bp.w * s, bp.h * s);
+
+  if (s >= 8) {
+    for (let y = 0; y < bp.h; y++) {
+      for (let x = 0; x < bp.w; x++) {
+        drawCell(x, y, s);
+      }
+    }
+  }
+
+  // 悬停 / 选中 / 探针
+  if (state.hover) outline(state.hover.x, state.hover.y, '#ffffff88', s);
+  if (state.selected) outline(state.selected.x, state.selected.y, '#ff9d2e', s);
+  for (const p of state.probes) outline(p.x, p.y, '#e05be0', s);
+
+  void engine;
+}
+
+function outline(x        , y        , colour        , s        )       {
+  const [px, py] = toScreen(x, y);
+  ctx2d.strokeStyle = colour;
+  ctx2d.lineWidth = 2;
+  ctx2d.strokeRect(px + 1, py + 1, s - 2, s - 2);
+}
+
+function drawCell(x        , y        , s        )       {
+  const [px, py] = toScreen(x, y);
+  const part = partAt(state.bp, x, y);
+  const port = ioAt(state.bp, x, y);
+
+  if (port) {
+    const engine = state.engine;
+    const reading = engine ? safeRead(engine, x, y) : null;
+    const typeColour = port.type === 'simple' ? '#5bd66a' : port.type === 'analog' ? '#5bd6ff' : '#e05be0';
+    ctx2d.fillStyle = port.mode === 'input' ? '#1c2a22' : '#2a1f1c';
+    ctx2d.fillRect(px + 1, py + 1, s - 2, s - 2);
+    ctx2d.strokeStyle = typeColour;
+    ctx2d.lineWidth = 2;
+    ctx2d.strokeRect(px + 1.5, py + 1.5, s - 3, s - 3);
+    if (s >= 14) {
+      ctx2d.fillStyle = reading && reading.level > 0 ? '#ffffff' : typeColour;
+      ctx2d.font = `${Math.max(8, s * 0.42)}px ui-monospace, monospace`;
+      ctx2d.textAlign = 'center';
+      ctx2d.textBaseline = 'middle';
+      const tag = port.type === 'simple' ? 'S' : port.type === 'analog' ? 'A' : 'B';
+      ctx2d.fillText(`${tag}${port.mode === 'input' ? '↓' : '↑'}`, px + s / 2, py + s / 2 - (s >= 20 ? 3 : 0));
+      if (s >= 20 && port.type !== 'simple') {
+        ctx2d.font = `${Math.max(7, s * 0.3)}px ui-monospace, monospace`;
+        ctx2d.fillStyle = '#8b95a3';
+        ctx2d.fillText(`#${port.freq}`, px + s / 2, py + s / 2 + s * 0.28);
+      }
+    }
+    return;
+  }
+
+  if (!part) return;
+  const spec = partSpec(part.kind);
+  const engine = state.engine;
+
+  if (spec.category === 'wire') {
+    drawWireCell(x, y, s, part);
+    return;
+  }
+  if (spec.category === 'array') {
+    drawArrayCell(x, y, s, part);
+    return;
+  }
+
+  // 门 / 调试元件
+  const debugOn = spec.category === 'debug' ? (engine ? engine.emitterOn(x, y) : false) : false;
+  ctx2d.fillStyle =
+    spec.category === 'debug' ? (debugOn ? '#4a4520' : '#2a2a1c') : '#2f3540';
+  ctx2d.strokeStyle =
+    spec.category === 'debug' ? (debugOn ? '#ffd24a' : '#6b6b3a') : '#4a5361';
+  ctx2d.lineWidth = 1;
+  roundRect(px + 1, py + 1, s - 2, s - 2, Math.min(4, s * 0.2));
+  ctx2d.fill();
+  ctx2d.stroke();
+
+  if (engine && spec.category !== 'debug') {
+    const logic = GATE_LOGIC[part.kind];
+    if (logic) {
+      // 输入/输出边
+      const inMask = logic.inputMask(part.shape);
+      const outMask = logic.outputMask(part.shape);
+      const outMaskState = engine.gateOutputMask(x, y);
+      for (let r = 0       ; r < 4; r = (r + 1)       ) {
+        const a = absoluteDir(r, part.rot);
+        const [dx, dy] = DIR_VEC[a];
+        const cx = px + s / 2 + (dx * s) / 2;
+        const cy = py + s / 2 + (dy * s) / 2;
+        if ((outMask & (1 << r)) !== 0) {
+          ctx2d.fillStyle = (outMaskState & (1 << r)) !== 0 ? heat(15) : '#4a5058';
+          ctx2d.beginPath();
+          ctx2d.arc(cx, cy, Math.max(1.6, s * 0.09), 0, Math.PI * 2);
+          ctx2d.fill();
+        } else if ((inMask & (1 << r)) !== 0) {
+          ctx2d.strokeStyle = '#6b7684';
+          ctx2d.beginPath();
+          ctx2d.arc(cx, cy, Math.max(1.4, s * 0.08), 0, Math.PI * 2);
+          ctx2d.stroke();
+        }
+      }
+    }
+  }
+
+  if (s >= 15) {
+    ctx2d.fillStyle = spec.category === 'debug' ? '#e8d98a' : '#d8dee6';
+    ctx2d.font = `${Math.max(8, s * 0.36)}px ui-monospace, monospace`;
+    ctx2d.textAlign = 'center';
+    ctx2d.textBaseline = 'middle';
+    const label = part.kind === 'dbg.torch' ? '火把' : part.kind === 'dbg.lever' ? '拉杆' : part.kind === 'dbg.button' ? '按钮' : shortLabel(part.kind);
+    ctx2d.fillText(label, px + s / 2, py + s / 2);
+  }
+}
+
+function shortLabel(kind        )         {
+  const map                         = {
+    'gate.not': 'NOT',
+    'gate.and': 'AND',
+    'gate.or': 'OR',
+    'gate.nand': 'NAND',
+    'gate.nor': 'NOR',
+    'gate.xor': 'XOR',
+    'gate.xnor': 'XNOR',
+    'gate.buffer': 'BUF',
+    'gate.multiplexer': 'MUX',
+    'gate.pulse_former': 'PULSE',
+    'gate.repeater': 'RPT',
+    'gate.timer': 'TMR',
+    'gate.sequencer': 'SEQ',
+    'gate.sr_latch': 'SR',
+    'gate.toggle_latch': 'TGL',
+    'gate.transparent_latch': 'LAT',
+    'gate.counter': 'CNT',
+    'gate.state_cell': 'ST',
+    'gate.synchronizer': 'SYN',
+    'gate.randomizer': 'RND',
+    'gate.dec_randomizer': 'DRND',
+  };
+  return map[kind] ?? partSpec(kind).en.slice(0, 4).toUpperCase();
+}
+
+function drawWireCell(x        , y        , s        , part                                                  )       {
+  const engine = state.engine;
+  const cell = x + y * state.bp.w;
+  const isBundle = part.kind === 'wire.bundled';
+  const insulated = part.kind === 'wire.insulated';
+  const dx = x;
+  const dy = y;
+
+  let level = 0;
+  let mask = 0;
+  if (engine) {
+    if (isBundle) {
+      const node = engine.net.nodeAt(cell, 0);
+      mask = engine.net.bundleMaskOfNode(node);
+      let maxCh = 0;
+      for (let c = 0; c < 16; c++) maxCh = Math.max(maxCh, engine.net.bundleOfNode(node, c));
+      level = vanillaLevel(maxCh);
+    } else {
+      level = vanillaLevel(engine.wireStrength(x, y));
+    }
+  }
+
+  const colour = isBundle
+    ? mask !== 0
+      ? heat(level)
+      : '#3a4048'
+    : insulated
+      ? level > 0
+        ? DYE[COLOR_NAMES[part.params.colour ?? 0] ?? 'red']
+        : shade(DYE[COLOR_NAMES[part.params.colour ?? 0] ?? 'red'], 0.45)
+      : heat(level);
+
+  ctx2d.strokeStyle = colour;
+  ctx2d.lineWidth = Math.max(2, s * 0.16);
+  ctx2d.lineCap = 'round';
+  const cxr = toScreen(dx, dy)[0] + s / 2;
+  const cyr = toScreen(dx, dy)[1] + s / 2;
+
+  const connects = (d     )          => {
+    const [ddx, ddy] = DIR_VEC[d];
+    const nx = dx + ddx;
+    const ny = dy + ddy;
+    if (!inBounds(state.bp, nx, ny)) return false;
+    const other = partAt(state.bp, nx, ny);
+    return wiresConnect(part         , other);
+  };
+
+  ctx2d.beginPath();
+  ctx2d.moveTo(cxr, cyr);
+  for (const d of [0, 1, 2, 3]         ) {
+    if (!connects(d)) continue;
+    const [ddx, ddy] = DIR_VEC[d];
+    ctx2d.moveTo(cxr, cyr);
+    ctx2d.lineTo(cxr + (ddx * s) / 2, cyr + (ddy * s) / 2);
+  }
+  ctx2d.stroke();
+
+  // 中心点
+  ctx2d.fillStyle = colour;
+  ctx2d.beginPath();
+  ctx2d.arc(cxr, cyr, Math.max(2, s * 0.16), 0, Math.PI * 2);
+  ctx2d.fill();
+
+  if (s >= 22) {
+    ctx2d.fillStyle = '#8b95a3';
+    ctx2d.font = `${Math.max(7, s * 0.24)}px ui-monospace, monospace`;
+    ctx2d.textAlign = 'center';
+    ctx2d.textBaseline = 'top';
+    ctx2d.fillText(isBundle ? mask.toString(16) : String(level), cxr, cyr + s * 0.12);
+  }
+}
+
+function drawArrayCell(x        , y        , s        , part                            )       {
+  const [px, py] = toScreen(x, y);
+  const engine = state.engine;
+  ctx2d.fillStyle = '#2a2f38';
+  roundRect(px + 1, py + 1, s - 2, s - 2, Math.min(4, s * 0.2));
+  ctx2d.fill();
+
+  const s0 = engine ? engine.arrayChannelStrength(x, y, 0) : 0;
+  const s1 = engine ? engine.arrayChannelStrength(x, y, 1) : 0;
+
+  ctx2d.lineWidth = Math.max(2, s * 0.15);
+  ctx2d.lineCap = 'round';
+  // 通道 0 = 内部 0x5（南北），通道 1 = 内部 0xa（东西）
+  const ns = [DIR_VEC[absoluteDir(0, part.rot)], DIR_VEC[absoluteDir(2, part.rot)]];
+  const ew = [DIR_VEC[absoluteDir(1, part.rot)], DIR_VEC[absoluteDir(3, part.rot)]];
+  ctx2d.strokeStyle = heat(vanillaLevel(s0));
+  ctx2d.beginPath();
+  for (const [dx, dy] of ns) {
+    ctx2d.moveTo(px + s / 2, py + s / 2);
+    ctx2d.lineTo(px + s / 2 + (dx * s) / 2, py + s / 2 + (dy * s) / 2);
+  }
+  ctx2d.stroke();
+  ctx2d.strokeStyle = heat(vanillaLevel(s1));
+  ctx2d.beginPath();
+  for (const [dx, dy] of ew) {
+    ctx2d.moveTo(px + s / 2, py + s / 2);
+    ctx2d.lineTo(px + s / 2 + (dx * s) / 2, py + s / 2 + (dy * s) / 2);
+  }
+  ctx2d.stroke();
+
+  if (s >= 20) {
+    ctx2d.fillStyle = '#d8dee6';
+    ctx2d.font = `${Math.max(7, s * 0.26)}px ui-monospace, monospace`;
+    ctx2d.textAlign = 'center';
+    ctx2d.textBaseline = 'middle';
+    ctx2d.fillText(part.kind === 'gate.null_cell' ? '空' : part.kind === 'gate.buffer_cell' ? '缓' : '反', px + s / 2, py + s / 2);
+  }
+}
+
+function roundRect(x        , y        , w        , h        , r        )       {
+  ctx2d.beginPath();
+  ctx2d.moveTo(x + r, y);
+  ctx2d.lineTo(x + w - r, y);
+  ctx2d.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx2d.lineTo(x + w, y + h - r);
+  ctx2d.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx2d.lineTo(x + r, y + h);
+  ctx2d.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx2d.lineTo(x, y + r);
+  ctx2d.quadraticCurveTo(x, y, x + r, y);
+  ctx2d.closePath();
+}
+
+function shade(hex        , f        )         {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.round(((n >> 16) & 255) * f);
+  const g = Math.round(((n >> 8) & 255) * f);
+  const b = Math.round((n & 255) * f);
+  return `rgb(${r},${g},${b})`;
+}
+
+function safeRead(engine        , x        , y        )                           {
+  try {
+    return engine.readIO(x, y);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------- 交互
+
+function applyTool(from                          , to                          )       {
+  const bp = state.bp;
+  const tool = state.tool;
+  let changed = false;
+
+  if (tool.kind === 'erase') {
+    const x0 = Math.min(from.x, to.x);
+    const x1 = Math.max(from.x, to.x);
+    const y0 = Math.min(from.y, to.y);
+    const y1 = Math.max(from.y, to.y);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!inBounds(bp, x, y)) continue;
+        const c = bp.cells[y * bp.w + x];
+        if (c.part || c.io) {
+          c.part = null;
+          c.io = null;
+          changed = true;
+        }
+      }
+    }
+  } else if (tool.kind === 'io') {
+    if (!isRing(bp, from.x, from.y) || isCorner(bp, from.x, from.y)) {
+      state.message = 'IO 端口只能放在最外一圈、且四角不行';
+      return;
+    }
+    const c = bp.cells[from.y * bp.w + from.x];
+    c.io = makePort(bp, from.x, from.y, tool.ioType, tool.mode, tool.freq);
+    changed = true;
+  } else if (tool.kind === 'part') {
+    const spec = partSpec(tool.part);
+    if (spec.category === 'wire') {
+      // 沿轴投影逐格填线（源码 OpWire）
+      const horizontal = Math.abs(to.x - from.x) >= Math.abs(to.y - from.y);
+      const steps = horizontal ? Math.abs(to.x - from.x) : Math.abs(to.y - from.y);
+      for (let i = 0; i <= steps; i++) {
+        const x = horizontal ? from.x + Math.sign(to.x - from.x) * i : from.x;
+        const y = horizontal ? from.y : from.y + Math.sign(to.y - from.y) * i;
+        if (!inBounds(bp, x, y) || isRing(bp, x, y)) continue;
+        placePart(bp, x, y, tool.part, tool.rot, tool.shape, tool.params);
+        changed = true;
+      }
+    } else {
+      if (!inBounds(bp, from.x, from.y) || isRing(bp, from.x, from.y)) {
+        state.message = '元件只能放在 IO 环以内';
+        return;
+      }
+      // 拖动方向定朝向（源码 OpGate.findRot）
+      let rot      = tool.rot;
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      if (Math.abs(dx) > Math.abs(dy)) rot = dx > 0 ? 1 : 3;
+      else if (dx !== 0 || dy !== 0) rot = dy > 0 ? 2 : 0;
+      placePart(bp, from.x, from.y, tool.part, rot, tool.shape, tool.params);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    rebuildEngine();
+    // 放下元件后自动选中它，方便立刻在检视面板里调朝向/参数
+    if (tool.kind === 'part' || tool.kind === 'io') state.selected = { x: from.x, y: from.y };
+    state.message = `已修改 @(${from.x},${from.y})${state.error ? ` — ${state.error}` : ''}`;
+  }
+}
+
+function makePort(bp           , x        , y        , ioType        , mode                    , freq        )         {
+  const side = sideOfRing(bp, x, y);
+  const cells = edgeCells(bp, side);
+  const index = cells.findIndex(([cx, cy]) => cx === x && cy === y);
+  // 与游戏一致：新放下的 IO 端口默认**不通信号**（电平 0 / 所有频道关）
+  return { type: ioType, mode, side, index, freq, driven: 0, channels: new Array(16).fill(0) };
+}
+
+function initMouse()       {
+  const wrap = el('boardWrap');
+
+  wrap.addEventListener('mousedown', (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    const cell = toCell(ev.clientX - rect.left, ev.clientY - rect.top);
+    if (ev.button === 2) {
+      if (inBounds(state.bp, cell.x, cell.y)) {
+        state.selected = cell;
+        renderInspector();
+      }
+      return;
+    }
+    state.drag = {
+      x: cell.x,
+      y: cell.y,
+      button: ev.button,
+      panX: state.panX,
+      panY: state.panY,
+      panning: ev.shiftKey,
+      mx: ev.clientX,
+      my: ev.clientY,
+    };
+    if (state.tool.kind === 'select' && !ev.shiftKey) {
+      // 左键 = 与元件交互（源码 `part.onClicked()` → `activate()`）：
+      //   拉杆 → 切换开关；按钮 → 按下（20 tick 后自动弹起）；IO 输入端口 → 调试通电/断电
+      const part = partAt(state.bp, cell.x, cell.y);
+      const port = ioAt(state.bp, cell.x, cell.y);
+      let acted = false;
+      if (part?.kind === 'dbg.lever' && state.engine) {
+        state.engine.toggleLever(cell.x, cell.y);
+        acted = true;
+      } else if (part?.kind === 'dbg.button' && state.engine) {
+        state.engine.pressButton(cell.x, cell.y);
+        acted = true;
+      } else if (port && port.mode === 'input') {
+        if (port.type === 'bundled') {
+          port.channels[port.freq] = port.channels[port.freq] ? 0 : 1;
+        } else if (port.type === 'analog') {
+          port.driven = port.driven > 0 && port.driven === port.freq ? 0 : port.freq;
+        } else {
+          port.driven = port.driven > 0 ? 0 : 15;
+        }
+        acted = true;
+      }
+      if (acted) {
+        // 暂停状态下也要能看到静态电平变化：手动求一次不动点
+        if (!state.running) state.engine?.refresh();
+        state.message = `@(${cell.x},${cell.y}) 已切换输入`;
+      }
+      state.selected = cell;
+      renderInspector();
+      renderStatus();
+      draw();
+    }
+  });
+
+  window.addEventListener('mousemove', (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    if (state.drag && state.drag.panning) {
+      state.panX = state.drag.panX + (ev.clientX - state.drag.mx);
+      state.panY = state.drag.panY + (ev.clientY - state.drag.my);
+      draw();
+      return;
+    }
+    if (px < 0 || py < 0 || px > state.viewW || py > state.viewH) {
+      state.hover = null;
+    } else {
+      state.hover = toCell(px, py);
+    }
+    renderStatus();
+    draw();
+  });
+
+  window.addEventListener('mouseup', (ev) => {
+    const drag = state.drag;
+    state.drag = null;
+    if (!drag) return;
+    const rect = canvas.getBoundingClientRect();
+    const cell = toCell(ev.clientX - rect.left, ev.clientY - rect.top);
+    if (drag.panning) return;
+    if (ev.button !== 0) return;
+    if (state.tool.kind === 'select') return;
+    if (!inBounds(state.bp, drag.x, drag.y)) return;
+    applyTool({ x: drag.x, y: drag.y }, cell);
+    renderInspector();
+    renderStatus();
+    draw();
+  });
+
+  window.addEventListener('contextmenu', (ev) => {
+    if (ev.target === canvas) ev.preventDefault();
+  });
+
+  wrap.addEventListener(
+    'wheel',
+    (ev) => {
+      ev.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const before = toCell(ev.clientX - rect.left, ev.clientY - rect.top);
+      const dir = ev.deltaY < 0 ? 0.1 : -0.1;
+      state.zoom = Math.max(0.5, Math.min(3, Math.round((state.zoom + dir) * 10) / 10));
+      const after = toCell(ev.clientX - rect.left, ev.clientY - rect.top);
+      const s = cellPx();
+      state.panX += (after.x - before.x) * s;
+      state.panY += (after.y - before.y) * s;
+      draw();
+      renderToolbar();
+    },
+    { passive: false },
+  );
+
+  window.addEventListener('keydown', (ev) => {
+    if (ev.key === 'e' || ev.key === 'E') {
+      state.tool = { kind: 'erase' };
+      renderPalette();
+    } else if (ev.key === 'Escape') {
+      state.tool = { kind: 'select' };
+      state.selected = null;
+      renderPalette();
+      renderInspector();
+    } else if (ev.key === ' ') {
+      ev.preventDefault();
+      state.running = !state.running;
+      renderToolbar();
+    } else if (ev.key === 'p' || ev.key === 'P') {
+      if (state.hover) toggleProbe(state.hover.x, state.hover.y);
+    }
+  });
+
+  window.addEventListener('resize', () => draw());
+}
+
+function toggleProbe(x        , y        )       {
+  const i = state.probes.findIndex((p) => p.x === x && p.y === y);
+  if (i >= 0) state.probes.splice(i, 1);
+  else if (state.probes.length < 6) state.probes.push({ x, y });
+  renderProbes();
+  draw();
+}
+
+// ---------------------------------------------------------------- 检视面板
+
+function renderInspector()       {
+  const root = el('inspector');
+  root.innerHTML = '';
+  const sel = state.selected;
+  const h = document.createElement('h4');
+  h.textContent = '检视 / 配置';
+  root.appendChild(h);
+
+  if (!sel) {
+    root.appendChild(text('右键元件打开配置面板；左键点 IO 端口可切换调试电平。'));
+    root.appendChild(hint('操作提示：\n左键拖动 = 使用当前工具\nShift+拖动 = 平移棋盘\n滚轮 = 缩放 0.5~3.0\nE = 橡皮擦，Esc = 取消，空格 = 运行/暂停\nP = 给悬停格加探针'));
+    return;
+  }
+
+  const part = partAt(state.bp, sel.x, sel.y);
+  const port = ioAt(state.bp, sel.x, sel.y);
+  const kv = document.createElement('div');
+  kv.className = 'kv';
+  const addKV = (k        , v        )       => {
+    const a = document.createElement('div');
+    a.textContent = k;
+    const b = document.createElement('div');
+    b.textContent = v;
+    kv.append(a, b);
+  };
+  addKV('坐标', `(${sel.x}, ${sel.y})`);
+  addKV('环上', isRing(state.bp, sel.x, sel.y) ? '是' : '否');
+  if (state.engine) addKV('状态', state.engine.describe(sel.x, sel.y));
+  if (state.error) addKV('校验', state.error);
+  root.appendChild(kv);
+
+  const probeBtn = button(state.probes.some((p) => p.x === sel.x && p.y === sel.y) ? '移除探针' : '加为探针', () =>
+    toggleProbe(sel.x, sel.y),
+  );
+  root.appendChild(probeBtn);
+
+  if (part) {
+    const spec = partSpec(part.kind);
+    root.appendChild(heading(`元件：${spec.zh}（${part.kind}）`));
+    const rotRow = document.createElement('div');
+    rotRow.className = 'row';
+    rotRow.append(text('朝向'));
+    for (let r = 0; r < 4; r++) {
+      rotRow.appendChild(
+        button(['↑', '→', '↓', '←'][r], () => {
+          part.rot = r       ;
+          rebuildEngine();
+          renderInspector();
+          draw();
+        }, part.rot === r),
+      );
+    }
+    root.appendChild(rotRow);
+
+    const maxShape = part.kind === 'gate.timer' || part.kind === 'gate.sequencer' ? 1 : 15;
+    const shapeRow = document.createElement('div');
+    shapeRow.className = 'row';
+    shapeRow.append(text('shape'));
+    for (const s of [0, 1, 2, 3]) {
+      if (s > maxShape) break;
+      shapeRow.appendChild(
+        button(String(s), () => {
+          part.shape = s;
+          rebuildEngine();
+          renderInspector();
+          draw();
+        }, part.shape === s),
+      );
+    }
+    root.appendChild(shapeRow);
+
+    for (const p of spec.params) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.style.marginTop = '4px';
+      const lab = text(`${p.label}`);
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = String(p.min);
+      input.max = String(p.max);
+      input.value = String(part.params[p.key] ?? p.def);
+      input.style.width = '90px';
+      input.onchange = () => {
+        part.params[p.key] = Number(input.value);
+        rebuildEngine();
+        draw();
+      };
+      row.append(lab, input);
+      root.appendChild(row);
+    }
+    root.appendChild(
+      button('删除该元件', () => {
+        const c = state.bp.cells[sel.y * state.bp.w + sel.x];
+        c.part = null;
+        rebuildEngine();
+        renderInspector();
+        draw();
+      }),
+    );
+  }
+
+  if (port) {
+    root.appendChild(heading(`IO 端口：${port.type} / ${port.mode} / 边 ${['上', '右', '下', '左'][port.side]}`));
+    const typeRow = document.createElement('div');
+    typeRow.className = 'row';
+    typeRow.append(text('类型'));
+    for (const t of ['simple', 'analog', 'bundled']            ) {
+      typeRow.appendChild(
+        button(t, () => {
+          port.type = t;
+          port.freq = t === 'simple' ? 0 : port.freq;
+          rebuildEngine();
+          renderInspector();
+          draw();
+        }, port.type === t),
+      );
+    }
+    root.appendChild(typeRow);
+
+    const modeRow = document.createElement('div');
+    modeRow.className = 'row';
+    modeRow.appendChild(
+      button('输入', () => {
+        port.mode = 'input';
+        rebuildEngine();
+        renderInspector();
+        draw();
+      }, port.mode === 'input'),
+    );
+    modeRow.appendChild(
+      button('输出', () => {
+        port.mode = 'output';
+        rebuildEngine();
+        renderInspector();
+        draw();
+      }, port.mode === 'output'),
+    );
+    root.appendChild(modeRow);
+
+    const freqRow = document.createElement('div');
+    freqRow.className = 'row';
+    freqRow.append(text('freq'));
+    const freqInput = document.createElement('input');
+    freqInput.type = 'number';
+    freqInput.min = '0';
+    freqInput.max = '15';
+    freqInput.value = String(port.freq);
+    freqInput.style.width = '70px';
+    freqInput.onchange = () => {
+      port.freq = Math.max(0, Math.min(15, Number(freqInput.value)));
+      rebuildEngine();
+      draw();
+    };
+    freqRow.appendChild(freqInput);
+    root.appendChild(freqRow);
+
+    if (port.mode === 'input') {
+      const drv = document.createElement('div');
+      drv.className = 'row';
+      drv.append(text('调试电平'));
+      const dinput = document.createElement('input');
+      dinput.type = 'number';
+      dinput.min = '0';
+      dinput.max = '15';
+      dinput.value = String(port.driven);
+      dinput.style.width = '70px';
+      dinput.onchange = () => {
+        port.driven = Math.max(0, Math.min(15, Number(dinput.value)));
+        if (!state.running) state.engine?.refresh();
+        renderStatus();
+        draw();
+      };
+      drv.appendChild(dinput);
+      root.appendChild(drv);
+    }
+    root.appendChild(
+      button('删除该端口', () => {
+        state.bp.cells[sel.y * state.bp.w + sel.x].io = null;
+        rebuildEngine();
+        renderInspector();
+        draw();
+      }),
+    );
+  }
+}
+
+function heading(s        )              {
+  const h = document.createElement('h4');
+  h.textContent = s;
+  return h;
+}
+
+function hint(s        )              {
+  const d = document.createElement('div');
+  d.className = 'hint';
+  d.style.whiteSpace = 'pre-line';
+  d.textContent = s;
+  return d;
+}
+
+// ---------------------------------------------------------------- 状态行 / 探针表
+
+function renderStatus()       {
+  const engine = state.engine;
+  const parts           = [];
+  parts.push(`tick ${engine ? engine.tick : 0}`);
+  parts.push(`尺寸 ${state.bp.w}×${state.bp.h}`);
+  if (state.hover) {
+    const { x, y } = state.hover;
+    parts.push(`(${x},${y}) ${engine ? engine.describe(x, y) : '—'}`);
+  } else {
+    parts.push('把鼠标移到格子上查看状态');
+  }
+  if (state.message) parts.push(state.message);
+  if (state.error) parts.push(`⚠ ${state.error}`);
+  if (engine && engine.warnings.length) parts.push(engine.warnings[0]);
+  el('status').textContent = parts.join('  |  ');
+}
+
+function recordRow()       {
+  const engine = state.engine;
+  if (!engine) return;
+  const cells = state.probes.map((p) => {
+    const c = state.bp.cells[p.y * state.bp.w + p.x];
+    if (!c) return '-';
+    if (c.io) {
+      const r = engine.readIO(p.x, p.y);
+      return c.io.type === 'bundled' ? `0x${r.bundleMask.toString(16)}` : String(r.level);
+    }
+    if (!c.part) return '-';
+    const spec = partSpec(c.part.kind);
+    if (spec.category === 'wire') {
+      if (c.part.kind === 'wire.bundled') {
+        const node = engine.net.nodeAt(p.y * state.bp.w + p.x, 0);
+        return `0x${engine.net.bundleMaskOfNode(node).toString(16)}`;
+      }
+      const s = engine.wireStrength(p.x, p.y);
+      return `${vanillaLevel(s)}`;
+    }
+    if (spec.category === 'array') {
+      return `${vanillaLevel(engine.arrayChannelStrength(p.x, p.y, 0))}|${vanillaLevel(engine.arrayChannelStrength(p.x, p.y, 1))}`;
+    }
+    if (spec.category === 'debug') return c.part.kind === 'dbg.torch' ? '1' : `0x${engine.gateState(p.x, p.y).toString(16)}`;
+    return `0x${engine.gateOutputMask(p.x, p.y).toString(16)}`;
+  });
+  state.rows.push([String(engine.tick), ...cells]);
+  if (state.rows.length > 40) state.rows.shift();
+}
+
+let lastProbeRender = 0;
+/** 探针表最多每 100ms 重建一次，避免高速度下每 tick 都动 DOM */
+function maybeRenderProbes(now        )       {
+  if (now - lastProbeRender < 100) return;
+  lastProbeRender = now;
+  renderProbes();
+}
+
+function renderProbes()       {
+  const root = el('probes');
+  root.innerHTML = '';
+  if (state.probes.length === 0) {
+    root.appendChild(hint('探针：把鼠标移到格子上按 P 添加（最多 6 个），这里会逐 tick 记录读数。'));
+    return;
+  }
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const hr = document.createElement('tr');
+  for (const label of ['tick', ...state.probes.map((p) => `@(${p.x},${p.y})`)]) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (const row of state.rows.slice().reverse()) {
+    const tr = document.createElement('tr');
+    for (const v of row) {
+      const td = document.createElement('td');
+      td.textContent = v;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  root.appendChild(table);
+}
+
+// ---------------------------------------------------------------- 主循环
+
+let lastTime = 0;
+let acc = 0;
+
+function frame(now        )       {
+  const dt = lastTime === 0 ? 0 : (now - lastTime) / 1000;
+  lastTime = now;
+  if (state.running && state.engine) {
+    acc += dt * state.speed;
+    let steps = 0;
+    while (acc >= 1 && steps < 200) {
+      state.engine.step();
+      recordRow();
+      acc -= 1;
+      steps++;
+    }
+    if (steps > 0) {
+      draw();
+      renderStatus();
+      maybeRenderProbes(now);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- 启动
+
+function renderAll()       {
+  renderToolbar();
+  renderPalette();
+  renderInspector();
+  renderStatus();
+  renderProbes();
+  draw();
+  renderToolbar();
+}
+
+function main()       {
+  rebuildEngine();
+  initMouse();
+  fitView(); // 打开就把整块棋盘适配进视口，避免 64×64 时"找不到格子"
+  renderAll();
+  (globalThis                                      ).__icSimDebug = { state, toScreen, toCell, cellPx, canvas };
+  requestAnimationFrame(frame);
+}
+
+main();
+
+
+//# sourceURL=web/app.js
+
+});
+
+__require("web/app.js");
+</script>
+</body>
+</html>
